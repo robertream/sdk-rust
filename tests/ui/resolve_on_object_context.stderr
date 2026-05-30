@@ -1,0 +1,14 @@
+error[E0599]: the method `resolve` exists for struct `restate_sdk::context::ObjectContextT<'_, MyObjectImpl>`, but its trait bounds were not satisfied
+  --> tests/ui/resolve_on_object_context.rs:12:13
+   |
+12 |         ctx.resolve(42u32).await?;
+   |             ^^^^^^^ method cannot be called due to unsatisfied trait bounds
+   |
+  ::: src/context/mod.rs
+   |
+   | pub struct ObjectContextT<'ctx, S> {
+   | ---------------------------------- doesn't satisfy `_: ContextResolve<'_>` or `_: SealedCanResolve`
+   |
+   = note: the following trait bounds were not satisfied:
+           `restate_sdk::context::ObjectContextT<'_, MyObjectImpl>: context::private::SealedCanResolve`
+           which is required by `restate_sdk::context::ObjectContextT<'_, MyObjectImpl>: restate_sdk::context::ContextResolve<'_>`

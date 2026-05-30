@@ -1,0 +1,97 @@
+{
+  "version": "1.1",
+  "timestamp": "2026-04-07-093531",
+  "branch_name": "linked-workflows",
+  "task_name": "linked-workflows",
+  "session_number": 8,
+  "continuity": {
+    "started": "2026-04-03",
+    "sessions_reviewed": 3,
+    "arc_goal": "Complete linked workflow SDK foundation and design Promise Objects API with compile-time type safety for handling long-lived external computations"
+  },
+  "progress_update": {
+    "summary": "We squashed the entire linked-workflows branch from 31 commits to 1, updated to latest shared-core proto, then designed the Promise Objects Rust SDK API. The design session produced a comprehensive API spec covering StartRequest (unified linking type replacing RunRequest), #[start] attribute for marking linkable handlers, T-suffix context gating for linking capability, PromiseContextT with compile-time resolve() enforcement, and WorkflowContextT as a new context type.",
+    "goal": "Complete linked workflow SDK foundation and design Promise Objects API with compile-time type safety",
+    "accomplished": [
+      "Squashed 31 commits into 1 clean commit (56f0718)",
+      "Updated to latest sdk-shared-core proto (LinkCompletionNotification rename, field reordering)",
+      "Designed Promise Objects API: StartRequest replaces RunRequest, #[start] attribute for linkable handlers",
+      "Designed PromiseContextT<S> with SealedCanResolve for compile-time resolve() gating",
+      "Designed WorkflowContextT<S> — new context type enabling linking from workflows",
+      "Established that linking requires T-suffix contexts (ObjectContextT, PromiseContextT, WorkflowContextT)",
+      "Wrote comprehensive design doc at docs/tasks/linked-workflows/kickoff/promise_objects_api_design.md"
+    ],
+    "now": "Design doc finalized and saved. API design discussion complete — all major decisions made.",
+    "next_steps": [
+      "Implement StartRequest type replacing RunRequest",
+      "Implement #[start] macro attribute with validation rules",
+      "Implement WorkflowContextT<S> context type",
+      "Implement PromiseContextT<S> with SealedCanResolve and ctx.resolve()",
+      "Add sys_resolve to sdk-shared-core VM trait",
+      "Switch shared-core from path dep back to published version before PR"
+    ],
+    "confidence": "high",
+    "constraints": [
+      "shared-core on local path dependency (../sdk-shared-core)",
+      "Server changes on local ../restate",
+      "AsyncFn requires Rust 1.85+",
+      "std::any::type_name format not contractually stable",
+      "No mock VM in codebase — integration tests require real Restate container",
+      "Server-side ResolveCommand not yet implemented",
+      "Discovery type remains VirtualObject — server doesn't distinguish promise objects"
+    ],
+    "decisions": [
+      "Squashed all 31 commits into single commit rather than splitting typed completion handlers out",
+      "Backup branch linked-workflows-backup preserved for safety",
+      "start_linked() returns impl Future (not DurableFuture) — link establishment is fast",
+      "result() returns impl DurableFuture — child completion can be long, needs select! support",
+      "Cancellation wraps Invocation via From — compile-time API narrowing for VO contexts",
+      "link() generic over T: From<Invocation> — type inference at call site",
+      "Invocation does NOT implement InvocationHandle — resolved vs unresolved separation",
+      "on_completion only via ObjectContextT path — no runtime panic risk",
+      "Handler input type: Result<T, TerminalError> where T: serde::Deserialize",
+      "T-suffix naming: ObjectContextT, RunRequestT, WorkflowClientT, RunT, CompletionHandlerFnT",
+      "sys_link returns LinkHandle with link_completion_handle",
+      "API: run_linked(req) on workflow client returns Request with linked:bool=true, .send() emits both OneWayCallCommand + CreateLinkCommand",
+      "API: unlink() on workflow client, fire-and-forget, emits RemoveLinkCommand",
+      "API: .send() returns impl InvocationHandle regardless of linked flag — CreateLink completion handled internally",
+      "StartRequest replaces RunRequest — unified type with start_linked() and on_completion()",
+      "#[start] is purely client-side code gen signal — no discovery metadata changes, valid on any non-shared Object or Workflow handler, rejected on #[shared] and Service",
+      "Linking gated to T-suffix contexts only — ObjectContextT, PromiseContextT, WorkflowContextT",
+      "PromiseContextT adds resolve() via SealedCanResolve sealed trait — compile-time enforcement",
+      "No enforced entry point name — user marks handlers with #[start], multiple allowed on objects",
+      "Workflow run is implicitly #[start], explicit #[start] on workflow allowed but redundant on run"
+    ],
+    "blockers": [],
+    "open_questions": [
+      "Should PromiseContextT be a new struct or ObjectContextT with conditional SealedCanResolve via S: Resolvable?",
+      "Should #[start] be required on at least one handler for PromiseContextT objects?",
+      "Should InvocationHandle::invocation_id() be removed since resolve() exists?",
+      "Should docs/ working files (session logs, reviews, specs) be excluded from the PR commit?"
+    ],
+    "risks": [
+      "Server-side promise objects (ResolveCommand) not yet implemented",
+      "Three repos need coordinated branches for PR"
+    ]
+  },
+  "working_set": {
+    "key_files": [
+      "docs/tasks/linked-workflows/kickoff/promise_objects_api_design.md",
+      "src/context/mod.rs",
+      "src/context/request.rs",
+      "src/endpoint/context.rs",
+      "macros/src/generator.rs",
+      "macros/src/ast.rs"
+    ],
+    "active_ids": [],
+    "recent_commands": [
+      "cargo check --all-features",
+      "cargo test --all-features",
+      "git rebase -i client-macro"
+    ]
+  },
+  "context": {
+    "wip_state": "uncommitted",
+    "last_commit": "56f0718"
+  }
+}

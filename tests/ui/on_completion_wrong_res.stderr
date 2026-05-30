@@ -1,0 +1,26 @@
+error[E0631]: type mismatch in function arguments
+  --> tests/ui/on_completion_wrong_res.rs:22:28
+   |
+ 3 | #[restate_sdk::object(ObjectContextT)]
+   | -------------------------------------- found signature defined here
+...
+22 |             .on_completion(Self::handle_i32_done)
+   |              ------------- ^^^^^^^^^^^^^^^^^^^^^ expected due to this
+   |              |
+   |              required by a bound introduced by this call
+   |
+   = note: expected function signature `for<'a, 'ctx> fn((&'a MyObjectImpl, restate_sdk::context::ObjectContextT<'ctx, MyObjectImpl>, Result<String, restate_sdk::errors::TerminalError>)) -> _`
+              found function signature `fn((&MyObjectImpl, restate_sdk::context::ObjectContextT<'_, MyObjectImpl>, Result<i32, restate_sdk::errors::TerminalError>)) -> _`
+   = note: required for `for<'a, 'b> fn(&'a MyObjectImpl, restate_sdk::context::ObjectContextT<'b, MyObjectImpl>, Result<i32, restate_sdk::errors::TerminalError>) -> impl Future<Output = Result<(), HandlerError>> + Send {<MyObjectImpl as MyObject>::handle_i32_done}` to implement `CompletionHandlerFnT<MyObjectImpl, String>`
+note: required by a bound in `StartRequestT::<'a, Req, Res, S>::on_completion`
+  --> src/context/request.rs
+   |
+   |     pub fn on_completion<F>(self, _handler: F) -> LinkedRunRequest<'a, Req, Res>
+   |            ------------- required by a bound in this associated function
+   |     where
+   |         F: CompletionHandlerFnT<S, Res>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `StartRequestT::<'a, Req, Res, S>::on_completion`
+help: consider wrapping the function in a closure
+   |
+22 |             .on_completion(|arg0: (&'a MyObjectImpl, restate_sdk::context::ObjectContextT<'ctx, MyObjectImpl>, Result<String, restate_sdk::errors::TerminalError>)| Self::handle_i32_done(/* (&MyObjectImpl, restate_sdk::context::ObjectContextT<'_, MyObjectImpl>, Result<i32, restate_sdk::errors::TerminalError>) */))
+   |                            ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++                      ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

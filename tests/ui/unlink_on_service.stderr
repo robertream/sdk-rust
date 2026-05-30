@@ -1,0 +1,12 @@
+error[E0277]: the trait bound `MyServiceClient<'_>: KeyedClient<'_>` is not satisfied
+  --> tests/ui/unlink_on_service.rs:18:13
+   |
+18 |         ctx.unlink::<MyServiceClient>("key");
+   |             ^^^^^^ the trait `KeyedClient<'_>` is not implemented for `MyServiceClient<'_>`
+   |
+   = help: the trait `KeyedClient<'ctx>` is implemented for `MyWorkflowClient<'ctx>`
+note: required by a bound in `restate_sdk::context::ContextClient::unlink::{anon_assoc#0}`
+  --> src/context/mod.rs
+   |
+   |     fn unlink<C: KeyedClient<'ctx>>(
+   |                  ^^^^^^^^^^^^^^^^^ required by this bound in `ContextClient::unlink::{anon_assoc#0}`

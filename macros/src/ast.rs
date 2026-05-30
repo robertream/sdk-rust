@@ -79,6 +79,7 @@ impl ServiceInner {
         let ident: Ident = input.parse()?;
         let content;
         braced!(content in input);
+
         let mut rpcs = Vec::<Handler>::new();
         while !content.is_empty() {
             let h: Handler = content.parse()?;
@@ -118,6 +119,15 @@ impl ServiceInner {
         }
         ident_errors?;
 
+        // Workflow `run` is implicitly a start handler
+        if service_type == ServiceType::Workflow {
+            for rpc in &mut rpcs {
+                if rpc.restate_name == "run" {
+                    rpc.is_start = true;
+                }
+            }
+        }
+
         let mut attrs = vec![];
         let mut restate_name = ident.to_string();
         for attr in parsed_attrs {
@@ -142,6 +152,7 @@ impl ServiceInner {
 pub(crate) struct Handler {
     pub(crate) attrs: Vec<Attribute>,
     pub(crate) is_shared: bool,
+    pub(crate) is_start: bool,
     pub(crate) is_lazy_state: bool,
     pub(crate) restate_name: String,
     pub(crate) ident: Ident,
@@ -215,6 +226,7 @@ impl Parse for Handler {
 
         // Process attributes
         let mut is_shared = false;
+        let is_start = false;
         let mut is_lazy_state = false;
         let mut restate_name = ident.to_string();
         let mut attrs = vec![];
@@ -234,6 +246,7 @@ impl Parse for Handler {
         Ok(Self {
             attrs,
             is_shared,
+            is_start,
             is_lazy_state,
             restate_name,
             ident,

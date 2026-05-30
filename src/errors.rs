@@ -76,7 +76,7 @@ impl AsRef<dyn StdError> for HandlerError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TerminalErrorInner {
     code: u16,
     message: String,
@@ -93,7 +93,8 @@ impl StdError for TerminalErrorInner {}
 /// Error representing the result of an operation recorded in the journal.
 ///
 /// When returned inside a [`crate::context::ContextSideEffects::run`] closure, or in a handler, it completes the operation with a failure value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
 pub struct TerminalError(pub(crate) TerminalErrorInner);
 
 impl TerminalError {

@@ -327,6 +327,37 @@ impl<T: PayloadMetadata> PayloadMetadata for Option<T> {
     }
 }
 
+// --- Result<T, TerminalError> implementation for completion handlers
+//
+// The server encodes completion handler arguments as JSON using serde's
+// standard Result format:
+//   Success: {"Ok": <child's JSON output>}
+//   Failure: {"Err": {"code": N, "message": "..."}}
+//
+// T must implement serde::Deserialize (not the SDK's Deserialize trait).
+
+impl<T: serde::Serialize> Serialize for Result<T, crate::errors::TerminalError> {
+    type Error = serde_json::Error;
+
+    fn serialize(&self) -> Result<Bytes, Self::Error> {
+        serde_json::to_vec(self).map(Bytes::from)
+    }
+}
+
+impl<T: for<'de> serde::Deserialize<'de>> Deserialize for Result<T, crate::errors::TerminalError> {
+    type Error = serde_json::Error;
+
+    fn deserialize(bytes: &mut Bytes) -> Result<Self, Self::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
+impl<T: PayloadMetadata> PayloadMetadata for Result<T, crate::errors::TerminalError> {
+    fn json_schema() -> Option<serde_json::Value> {
+        T::json_schema()
+    }
+}
+
 // --- Primitives
 
 macro_rules! impl_integer_primitives {

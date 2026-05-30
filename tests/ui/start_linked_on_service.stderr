@@ -1,0 +1,9 @@
+error[E0599]: no method named `start_linked` found for struct `restate_sdk::context::Request` in the current scope
+  --> tests/ui/start_linked_on_service.rs:20:14
+   |
+18 | /         ctx.service_client::<MyServiceClient>()
+19 | |             .my_handler(input.clone())
+20 | |             .start_linked();
+   | |             -^^^^^^^^^^^^ method not found in `restate_sdk::context::Request<'_, String, String>`
+   | |_____________|
+   |

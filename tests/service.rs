@@ -32,6 +32,33 @@ trait MyWorkflow {
     async fn my_shared_handler(input: String) -> HandlerResult<String>;
 }
 
+#[restate_sdk::workflow]
+trait LinkedChild {
+    async fn run(input: String) -> HandlerResult<String>;
+}
+
+// WorkflowContext: basic linked workflow test
+#[restate_sdk::workflow]
+trait LinkedParent {
+    async fn run(input: String) -> HandlerResult<String>;
+}
+
+#[allow(dead_code)]
+struct LinkedParentImpl;
+
+impl LinkedParent for LinkedParentImpl {
+    async fn run(&self, ctx: WorkflowContext<'_>, input: String) -> HandlerResult<String> {
+        let _fut = ctx
+            .workflow_client::<LinkedChildClient>("child-key")
+            .run(input.clone())
+            .start_linked();
+
+        ctx.unlink::<LinkedChildClient>("child-key").await?;
+
+        Ok(input)
+    }
+}
+
 #[restate_sdk::service]
 #[name = "myRenamedService"]
 trait MyRenamedService {

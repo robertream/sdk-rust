@@ -1,0 +1,83 @@
+{
+  "version": "1.1",
+  "timestamp": "2026-04-06-065928",
+  "branch_name": "linked-workflows",
+  "task_name": "linked-workflows",
+  "session_number": 3,
+  "continuity": {
+    "started": "2026-04-03",
+    "sessions_reviewed": 1,
+    "arc_goal": "Add complete linked workflow support to the Rust SDK: design user-facing API, implement protocol backing with compile-time validation, pass all tests, and prepare for integration against Restate server"
+  },
+  "progress_update": {
+    "summary": "We designed and implemented the full on_completion API for linked workflows, including compile-time handler signature validation via AsyncFn bounds (Rust 1.85+), runtime handler name resolution via type_name + macro-generated resolvers, and the ObjectContextT typed context path for same-object enforcement. We iterated through several design approaches before landing on the final architecture. Code review identified the Result<T, TerminalError> serde as a placeholder needing server protocol finalization.",
+    "goal": "Add linked workflow support to the Rust SDK with TDD approach. Success: start_linked(), unlink(), and on_completion() work on workflow clients, backed by CreateLinkCommand/RemoveLinkCommand protocol messages, with compile-time handler validation.",
+    "accomplished": [
+      "Implemented on_completion() with AsyncFn-based CompletionHandlerFnT trait for compile-time handler signature and Res type validation",
+      "Added ObjectContextT<'ctx, S> typed context with #[restate_sdk::object(ObjectContextT)] macro attribute for same-object enforcement",
+      "Added RunRequestT, WorkflowClientT, RunT types to thread parent type S from context through to on_completion",
+      "Added LinkedRunRequest type that restricts terminal to start_linked() only after on_completion()",
+      "Fixed sys_link completion_handler_name arg, ingress Deserialize bound, rustfmt issues",
+      "Added Result<T, TerminalError> serde impls for completion handler input type",
+      "Added 5 trybuild negative compile tests (wrong Res, non-handler, wrong object, start_linked on service, unlink on service)",
+      "Removed default-path on_completion from RunRequest — now only available via typed ObjectContextT path",
+      "Ran comprehensive code review, addressed H1 (runtime panic) by removing default path"
+    ],
+    "now": "Session ended after completing code review action items. All tests passing, all commits clean.",
+    "next_steps": [
+      "Resolve Result<T, TerminalError> serde semantics once server protocol for completion handler invocation is finalized (C1/C2 from review)",
+      "Add integration test exercising linked workflows against a Restate container (requires server with linked-workflow support)",
+      "Consider squashing/cleaning commit history before PR",
+      "Update task_context.md with final API design decisions"
+    ],
+    "confidence": "high",
+    "constraints": [
+      "shared-core on local path dependency (../sdk-shared-core) on linked-workflows branch",
+      "AsyncFn requires Rust 1.85+ (stable since Feb 2025)",
+      "std::any::type_name format is not contractually stable — accepted risk",
+      "Server-side linked-workflows has known bugs (VO parent wrong InvocationId, cancel not propagating)",
+      "No MockVM in codebase — tests are either compile-time or full integration with real Restate"
+    ],
+    "decisions": [
+      "on_completion only available via ObjectContextT typed path — eliminated runtime panic risk from default path",
+      "Handler input type is Result<T, TerminalError> — maps to protocol success/failure, serde is placeholder until server protocol finalized",
+      "T-suffix naming convention: ObjectContextT, RunRequestT, WorkflowClientT, RunT, CompletionHandlerFnT",
+      "API: run_linked(req) on workflow client returns Request with linked:bool=true, .send() emits both OneWayCallCommand + CreateLinkCommand",
+      "API: unlink() on workflow client, fire-and-forget, emits RemoveLinkCommand",
+      "API: .send() returns impl InvocationHandle regardless of linked flag — CreateLink completion handled internally"
+    ],
+    "blockers": [],
+    "open_questions": [
+      "How does Restate server encode completion handler arguments? (success bytes vs failure bytes envelope)",
+      "Should we squash the many iterative commits before PR?"
+    ],
+    "risks": [
+      "Result<T, TerminalError> Deserialize always produces Ok(T) — cannot represent child failure until protocol is clarified",
+      "Server-side linked-workflows has critical bugs that may affect integration testing"
+    ]
+  },
+  "working_set": {
+    "key_files": [
+      "src/context/request.rs",
+      "src/context/mod.rs",
+      "src/endpoint/context.rs",
+      "macros/src/generator.rs",
+      "macros/src/lib.rs",
+      "src/serde.rs",
+      "tests/completion_handler_prototype.rs",
+      "tests/typed_context.rs",
+      "tests/service.rs",
+      "test-services/src/linked_workflow.rs"
+    ],
+    "active_ids": [],
+    "recent_commands": [
+      "cargo test --all-features",
+      "cargo clippy --all-targets --all-features",
+      "cargo fmt"
+    ]
+  },
+  "context": {
+    "wip_state": "uncommitted",
+    "last_commit": "c16ca3a"
+  }
+}

@@ -18,7 +18,7 @@ path = "examples/schema.rs"
 required-features = ["schemars"]
 
 [features]
-default = ["http_server", "rand", "uuid", "tracing-span-filter", "rust_crypto"]
+default = ["http_server", "rand", "uuid", "tracing-span-filter"]
 hyper = ["dep:hyper", "http-body-util", "restate-sdk-shared-core/http"]
 http_server = ["hyper", "hyper/server", "hyper/http2", "hyper-util", "tokio/net", "tokio/signal", "tokio/macros"]
 tracing-span-filter = ["dep:tracing-subscriber"]
@@ -41,7 +41,7 @@ pin-project-lite = "0.2"
 rand = { version = "0.10", optional = true }
 regress = "0.10"
 restate-sdk-macros = { version = "0.10", path = "macros" }
-restate-sdk-shared-core = { version = "=0.10.0", features = ["request_identity", "sha2_random_seed", "http"] }
+restate-sdk-shared-core = { path = "../sdk-shared-core", features = ["request_identity", "sha2_random_seed", "http"] }
 schemars = { version = "1.2", optional = true }
 serde = "1.0"
 serde_json = "1.0"

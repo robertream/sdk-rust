@@ -1,6 +1,6 @@
 use crate::context::{
     CallFuture, DurableFuture, InvocationHandle, Request, RequestTarget, RunClosure, RunFuture,
-    RunRetryPolicy,
+    RunRetryPolicy, StartRequest,
 };
 use crate::endpoint::futures::async_result_poll::VmAsyncResultPollFuture;
 use crate::endpoint::futures::durable_future_impl::DurableFutureImpl;
@@ -379,6 +379,14 @@ impl ContextInternal {
         Request::new(self, request_target, req)
     }
 
+    pub fn start_request<Req, Res>(
+        &self,
+        request_target: RequestTarget,
+        req: Req,
+    ) -> StartRequest<'_, Req, Res> {
+        StartRequest::new(self, request_target, req)
+    }
+
     pub fn call<Req: Serialize, Res: Deserialize>(
         &self,
         request_target: RequestTarget,
@@ -472,8 +480,112 @@ impl ContextInternal {
         req: Req,
         delay: Option<Duration>,
     ) -> impl InvocationHandle {
-        let mut inner_lock = must_lock!(self.inner);
+        let (mut inner_lock, target, input) =
+            match self.prepare_send(request_target, idempotency_key, headers, req) {
+                Some(v) => v,
+                None => return Either::Right(TrapFuture::<()>::default()),
+            };
 
+        let execution_time = delay.map(|delay| {
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("Duration since unix epoch cannot fail")
+                + delay
+        });
+
+        let send_handle = match inner_lock.vm.sys_send(
+            target,
+            input,
+            execution_time,
+            None,
+            PayloadOptions::stable(),
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                inner_lock.fail(e.into());
+                return Either::Right(TrapFuture::<()>::default());
+            }
+        };
+
+        inner_lock.maybe_flip_span_replaying_field();
+        drop(inner_lock);
+
+        Either::Left(self.invocation_id_handle(send_handle))
+    }
+
+    pub fn link<Req: Serialize, Res>(
+        &self,
+        request_target: RequestTarget,
+        idempotency_key: Option<String>,
+        headers: Vec<(String, String)>,
+        req: Req,
+        completion_handler_name: Option<String>,
+    ) -> impl Future<Output = Result<Invocation<Res>, TerminalError>> + Send {
+        let (mut inner_lock, target, input) =
+            match self.prepare_send(request_target, idempotency_key, headers, req) {
+                Some(v) => v,
+                None => {
+                    return Either::Right(
+                        TrapFuture::<Result<Invocation<Res>, TerminalError>>::default(),
+                    );
+                }
+            };
+
+        let notification_handle = match inner_lock.vm.sys_start_linked(
+            target,
+            input,
+            completion_handler_name,
+            None,
+            PayloadOptions::stable(),
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                inner_lock.fail(e.into());
+                return Either::Right(
+                    TrapFuture::<Result<Invocation<Res>, TerminalError>>::default(),
+                );
+            }
+        };
+
+        inner_lock.maybe_flip_span_replaying_field();
+        drop(inner_lock);
+
+        let ctx = self.clone();
+        let link_result_fut = InterceptErrorFuture::new(
+            self.clone(),
+            get_async_result(Arc::clone(&self.inner), notification_handle).map(
+                move |res| match res {
+                    Ok(Value::Failure(f)) => Ok(Err(f.into())),
+                    Ok(Value::InvocationId(s)) => Ok(Ok(Invocation {
+                        invocation_id: s,
+                        ctx,
+                        _result: std::marker::PhantomData,
+                    })),
+                    Ok(v) => Err(ErrorInner::UnexpectedValueVariantForSyscall {
+                        variant: <&'static str>::from(v),
+                        syscall: "link",
+                    }
+                    .into()),
+                    Err(e) => Err(e),
+                },
+            ),
+        );
+
+        Either::Left(link_result_fut)
+    }
+
+    fn prepare_send<Req: Serialize>(
+        &self,
+        request_target: RequestTarget,
+        idempotency_key: Option<String>,
+        headers: Vec<(String, String)>,
+        req: Req,
+    ) -> Option<(
+        std::sync::MutexGuard<'_, ContextInternalInner>,
+        Target,
+        bytes::Bytes,
+    )> {
+        let mut inner_lock = must_lock!(self.inner);
         let mut target: Target = request_target.into();
         target.idempotency_key = idempotency_key;
         target.headers = headers
@@ -486,32 +598,17 @@ impl ContextInternal {
         let input = match Req::serialize(&req) {
             Ok(b) => b,
             Err(e) => {
-                inner_lock.fail(Error::serialization("call", e));
-                return Either::Right(TrapFuture::<()>::default());
+                inner_lock.fail(Error::serialization("send", e));
+                return None;
             }
         };
+        Some((inner_lock, target, input))
+    }
 
-        let send_handle = match inner_lock.vm.sys_send(
-            target,
-            input,
-            delay.map(|delay| {
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .expect("Duration since unix epoch cannot fail")
-                    + delay
-            }),
-            None,
-            PayloadOptions::stable(),
-        ) {
-            Ok(h) => h,
-            Err(e) => {
-                inner_lock.fail(e.into());
-                return Either::Right(TrapFuture::<()>::default());
-            }
-        };
-        inner_lock.maybe_flip_span_replaying_field();
-        drop(inner_lock);
-
+    fn invocation_id_handle(
+        &self,
+        send_handle: restate_sdk_shared_core::SendHandle,
+    ) -> SendRequestHandle<impl Future<Output = Result<String, TerminalError>> + Send> {
         let invocation_id_fut = InterceptErrorFuture::new(
             self.clone(),
             get_async_result(
@@ -523,23 +620,159 @@ impl ContextInternal {
                 Ok(Value::InvocationId(s)) => Ok(Ok(s)),
                 Ok(v) => Err(ErrorInner::UnexpectedValueVariantForSyscall {
                     variant: <&'static str>::from(v),
-                    syscall: "call",
+                    syscall: "send",
                 }
                 .into()),
                 Err(e) => Err(e),
             }),
         );
 
-        Either::Left(SendRequestHandle {
+        SendRequestHandle {
             invocation_id_future: invocation_id_fut.shared(),
             ctx: self.clone(),
-        })
+        }
     }
 
-    pub fn invocation_handle(&self, invocation_id: String) -> impl InvocationHandle {
-        InvocationIdBackedInvocationHandle {
+    pub fn unlink_service(
+        &self,
+        child_service_name: &'static str,
+        child_service_key: String,
+    ) -> impl Future<Output = Result<(), TerminalError>> + Send {
+        let mut inner_lock = must_lock!(self.inner);
+        let handle = match inner_lock.vm.sys_unlink_service(
+            child_service_name.to_string(),
+            child_service_key,
+            None,
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                inner_lock.fail(e.into());
+                return Either::Right(TrapFuture::default());
+            }
+        };
+        inner_lock.maybe_flip_span_replaying_field();
+        drop(inner_lock);
+
+        let result_fut = get_async_result(Arc::clone(&self.inner), handle).map(|res| match res {
+            Ok(Value::Void) => Ok(Ok(())),
+            Ok(Value::Failure(f)) => Ok(Err(TerminalError::from(f))),
+            Ok(v) => Err(ErrorInner::UnexpectedValueVariantForSyscall {
+                variant: <&'static str>::from(v),
+                syscall: "unlink_service",
+            }
+            .into()),
+            Err(e) => Err(e),
+        });
+
+        Either::Left(InterceptErrorFuture::new(self.clone(), result_fut))
+    }
+
+    pub fn link_service(
+        &self,
+        child_service_name: &'static str,
+        child_service_key: String,
+        completion_handler_name: Option<String>,
+    ) -> impl Future<Output = Result<(), TerminalError>> + Send {
+        let mut inner_lock = must_lock!(self.inner);
+        let handle = match inner_lock.vm.sys_link_service(
+            child_service_name.to_string(),
+            child_service_key,
+            completion_handler_name,
+            None,
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                inner_lock.fail(e.into());
+                return Either::Right(TrapFuture::default());
+            }
+        };
+        inner_lock.maybe_flip_span_replaying_field();
+        drop(inner_lock);
+
+        let result_fut = get_async_result(Arc::clone(&self.inner), handle).map(|res| match res {
+            Ok(Value::Void) => Ok(Ok(())),
+            Ok(Value::Failure(f)) => Ok(Err(TerminalError::from(f))),
+            Ok(v) => Err(ErrorInner::UnexpectedValueVariantForSyscall {
+                variant: <&'static str>::from(v),
+                syscall: "link_service",
+            }
+            .into()),
+            Err(e) => Err(e),
+        });
+
+        Either::Left(InterceptErrorFuture::new(self.clone(), result_fut))
+    }
+
+    pub fn unlink_invocation(
+        &self,
+        invocation_id: String,
+    ) -> impl Future<Output = Result<(), TerminalError>> + Send {
+        let mut inner_lock = must_lock!(self.inner);
+        let handle = match inner_lock.vm.sys_unlink_invocation(invocation_id, None) {
+            Ok(h) => h,
+            Err(e) => {
+                inner_lock.fail(e.into());
+                return Either::Right(TrapFuture::default());
+            }
+        };
+        inner_lock.maybe_flip_span_replaying_field();
+        drop(inner_lock);
+
+        let result_fut = get_async_result(Arc::clone(&self.inner), handle).map(|res| match res {
+            Ok(Value::Void) => Ok(Ok(())),
+            Ok(Value::Failure(f)) => Ok(Err(TerminalError::from(f))),
+            Ok(v) => Err(ErrorInner::UnexpectedValueVariantForSyscall {
+                variant: <&'static str>::from(v),
+                syscall: "unlink_invocation",
+            }
+            .into()),
+            Err(e) => Err(e),
+        });
+
+        Either::Left(InterceptErrorFuture::new(self.clone(), result_fut))
+    }
+
+    pub fn attach_service<T: crate::serde::Deserialize + 'static>(
+        &self,
+        service_name: &'static str,
+        service_key: &str,
+    ) -> impl DurableFuture<Output = Result<T, TerminalError>> + Send {
+        let mut inner_lock = must_lock!(self.inner);
+        let handle = match inner_lock.vm.sys_attach_service(
+            service_name.to_string(),
+            service_key.to_string(),
+            None,
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                inner_lock.fail(e.into());
+                return Either::Right(TrapFuture::default());
+            }
+        };
+        inner_lock.maybe_flip_span_replaying_field();
+        drop(inner_lock);
+
+        let result_fut =
+            get_async_result(Arc::clone(&self.inner), handle).map(|res| match res {
+                Ok(Value::Success(mut s)) => Ok(Ok(T::deserialize(&mut s)
+                    .map_err(|e| Error::deserialization("attach_service", e))?)),
+                Ok(Value::Failure(f)) => Ok(Err(TerminalError::from(f))),
+                Ok(v) => Err(ErrorInner::UnexpectedValueVariantForSyscall {
+                    variant: <&'static str>::from(v),
+                    syscall: "attach_service",
+                }
+                .into()),
+                Err(e) => Err(e),
+            });
+
+        Either::Left(DurableFutureImpl::new(self.clone(), handle, result_fut))
+    }
+
+    pub fn invocation(&self, invocation_id: String) -> Invocation {
+        Invocation {
             ctx: self.clone(),
             invocation_id,
+            _result: std::marker::PhantomData,
         }
     }
 
@@ -700,6 +933,83 @@ impl ContextInternal {
             NonEmptyValue::Failure(failure.into()),
             PayloadOptions::stable(),
         );
+    }
+
+    /// Resolve the promise object with a successful result value.
+    pub fn resolve<T: crate::serde::Serialize>(
+        &self,
+        result: T,
+    ) -> impl Future<Output = Result<(), TerminalError>> + Send {
+        let mut inner_lock = must_lock!(self.inner);
+        let value = match T::serialize(&result) {
+            Ok(b) => NonEmptyValue::Success(b),
+            Err(e) => {
+                inner_lock.fail(Error::serialization("resolve", e));
+                return Either::Right(TrapFuture::default());
+            }
+        };
+        let handle = match inner_lock
+            .vm
+            .sys_complete_service(value, None, PayloadOptions::stable())
+        {
+            Ok(h) => h,
+            Err(e) => {
+                inner_lock.fail(e.into());
+                return Either::Right(TrapFuture::default());
+            }
+        };
+        inner_lock.maybe_flip_span_replaying_field();
+        drop(inner_lock);
+
+        Either::Left(InterceptErrorFuture::new(
+            self.clone(),
+            get_async_result(Arc::clone(&self.inner), handle).map(|res| match res {
+                Ok(Value::Void) => Ok(Ok(())),
+                Ok(Value::Failure(f)) => Ok(Err(f.into())),
+                Ok(v) => Err(ErrorInner::UnexpectedValueVariantForSyscall {
+                    variant: <&'static str>::from(v),
+                    syscall: "resolve",
+                }
+                .into()),
+                Err(e) => Err(e),
+            }),
+        ))
+    }
+
+    /// Resolve the promise object with a failure.
+    pub fn resolve_failure(
+        &self,
+        msg: String,
+        code: u16,
+    ) -> impl Future<Output = Result<(), TerminalError>> + Send {
+        let mut inner_lock = must_lock!(self.inner);
+        let value = NonEmptyValue::Failure(TerminalError::new_with_code(code, msg).into());
+        let handle = match inner_lock
+            .vm
+            .sys_complete_service(value, None, PayloadOptions::stable())
+        {
+            Ok(h) => h,
+            Err(e) => {
+                inner_lock.fail(e.into());
+                return Either::Right(TrapFuture::default());
+            }
+        };
+        inner_lock.maybe_flip_span_replaying_field();
+        drop(inner_lock);
+
+        Either::Left(InterceptErrorFuture::new(
+            self.clone(),
+            get_async_result(Arc::clone(&self.inner), handle).map(|res| match res {
+                Ok(Value::Void) => Ok(Ok(())),
+                Ok(Value::Failure(f)) => Ok(Err(f.into())),
+                Ok(v) => Err(ErrorInner::UnexpectedValueVariantForSyscall {
+                    variant: <&'static str>::from(v),
+                    syscall: "resolve",
+                }
+                .into()),
+                Err(e) => Err(e),
+            }),
+        ))
     }
 
     pub fn run<'a, Run, Fut, Out>(
@@ -1059,6 +1369,19 @@ where
             Ok(())
         }
     }
+
+    fn resolve(&self) -> impl Future<Output = Result<Invocation, TerminalError>> + Send {
+        let id_fut = Shared::clone(&self.invocation_id_future);
+        let ctx = self.ctx.clone();
+        async move {
+            let invocation_id = id_fut.await?;
+            Ok(Invocation {
+                invocation_id,
+                ctx,
+                _result: std::marker::PhantomData,
+            })
+        }
+    }
 }
 
 impl<InvIdFut, ResultFut, Res> CallFuture for CallFutureImpl<InvIdFut, ResultFut>
@@ -1114,24 +1437,53 @@ impl<InvIdFut: Future<Output = Result<String, TerminalError>> + Send> Invocation
             Ok(())
         }
     }
+
+    fn resolve(&self) -> impl Future<Output = Result<Invocation, TerminalError>> + Send {
+        let id_fut = Shared::clone(&self.invocation_id_future);
+        let ctx = self.ctx.clone();
+        async move {
+            let invocation_id = id_fut.await?;
+            Ok(Invocation {
+                invocation_id,
+                ctx,
+                _result: std::marker::PhantomData,
+            })
+        }
+    }
 }
 
-struct InvocationIdBackedInvocationHandle {
-    ctx: ContextInternal,
+/// A linked invocation handle with a known ID.
+/// Provides sync `id()` and async `cancel()`.
+///
+/// The phantom type `T` carries the expected result type of the linked handler.
+/// Use [`LinkHandle::output`] to await the result.
+pub struct Invocation<T = ()> {
     invocation_id: String,
+    ctx: ContextInternal,
+    _result: std::marker::PhantomData<fn() -> T>,
 }
 
-impl InvocationHandle for InvocationIdBackedInvocationHandle {
-    fn invocation_id(&self) -> impl Future<Output = Result<String, TerminalError>> + Send {
-        ready(Ok(self.invocation_id.clone()))
+impl<T> Invocation<T> {
+    pub fn id(&self) -> &str {
+        &self.invocation_id
     }
 
-    fn cancel(&self) -> impl Future<Output = Result<(), TerminalError>> + Send {
-        let mut inner_lock = must_lock!(self.ctx.inner);
-        let _ = inner_lock
-            .vm
-            .sys_cancel_invocation(self.invocation_id.clone());
-        ready(Ok(()))
+    /// Cancel this invocation.
+    pub fn cancel(&self) -> impl Future<Output = Result<(), TerminalError>> + Send {
+        let inv_id = self.invocation_id.clone();
+        let inner = Arc::clone(&self.ctx.inner);
+        async move {
+            let mut inner_lock = must_lock!(inner);
+            let _ = inner_lock.vm.sys_cancel_invocation(inv_id);
+            inner_lock.maybe_flip_span_replaying_field();
+            drop(inner_lock);
+            Ok(())
+        }
+    }
+
+    /// Unlink this invocation. The child continues running independently.
+    pub fn unlink(&self) -> impl Future<Output = Result<(), TerminalError>> + Send {
+        self.ctx.unlink_invocation(self.invocation_id.clone())
     }
 }
 
@@ -1153,6 +1505,40 @@ where
             Either::Right(r) => Either::Right(r.cancel()),
         }
     }
+
+    fn resolve(&self) -> impl Future<Output = Result<Invocation, TerminalError>> + Send {
+        match self {
+            Either::Left(l) => Either::Left(l.resolve()),
+            Either::Right(r) => Either::Right(r.resolve()),
+        }
+    }
+}
+
+impl<A, B> crate::context::macro_support::SealedDurableFuture for Either<A, B>
+where
+    A: crate::context::macro_support::SealedDurableFuture,
+    B: crate::context::macro_support::SealedDurableFuture,
+{
+    fn inner_context(&self) -> ContextInternal {
+        match self {
+            Either::Left(l) => l.inner_context(),
+            Either::Right(r) => r.inner_context(),
+        }
+    }
+
+    fn handle(&self) -> NotificationHandle {
+        match self {
+            Either::Left(l) => l.handle(),
+            Either::Right(r) => r.handle(),
+        }
+    }
+}
+
+impl<A, B> DurableFuture for Either<A, B>
+where
+    A: DurableFuture,
+    B: DurableFuture<Output = A::Output>,
+{
 }
 
 impl Error {

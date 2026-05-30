@@ -1,0 +1,84 @@
+{
+  "version": "1.1",
+  "timestamp": "2026-04-07-193554",
+  "branch_name": "linked-workflows",
+  "task_name": "linked-workflows",
+  "session_number": 9,
+  "continuity": {
+    "started": "2026-04-03",
+    "sessions_reviewed": 3,
+    "arc_goal": "Implement Promise Objects API with compile-time type safety for linked workflows in the Rust SDK, replacing runtime-heavy approach with design-time validation"
+  },
+  "progress_update": {
+    "summary": "Massive session — designed and implemented the Promise Objects API for the Rust SDK. Started with design discussion (StartRequest, #[start], PromiseContextT, WorkflowContextT), then executed 4-phase implementation. Post-implementation, refactored Invocation to Invocation<T> with phantom result type, removed Cancellation, moved result-awaiting to WorkflowContextT::get_output(), and wired ctx.resolve() to the real sys_resolve syscall from sdk-shared-core. All 40 tests passing.",
+    "goal": "Implement Promise Objects API with compile-time type safety for the Restate Rust SDK",
+    "accomplished": [
+      "Designed Promise Objects API: StartRequest (renamed from RunRequest), #[start] attribute, PromiseContextT, WorkflowContextT, ContextResolve trait",
+      "Implemented all 4 phases: rename, macro parsing, new context types, generator updates, compile tests",
+      "Refactored Invocation to Invocation<T> with PhantomData<fn() -> T> — carries result type, no Send/static bounds needed",
+      "Removed Cancellation type entirely — Invocation<T> is the single handle type with id() and cancel()",
+      "Added WorkflowContextT::get_output(&inv) — only workflow contexts can await linked child results, returns DurableFuture",
+      "Wired ctx.resolve() and ctx.resolve_failure() to real sys_resolve syscall (no more todo!() stubs)",
+      "Code review completed — H1 (StartRequestT return type) and H2 (test coverage) findings fixed"
+    ],
+    "now": "Implementation complete. All 40 tests passing. 18 uncommitted files. Ready for commit/cleanup.",
+    "next_steps": [
+      "Commit the promise objects implementation",
+      "Update the design doc to reflect final API (Invocation<T>, get_output, no Cancellation)",
+      "Consider squashing commits for clean PR history",
+      "Switch shared-core from path dep back to published version before PR"
+    ],
+    "confidence": "high",
+    "constraints": [
+      "shared-core on local path dependency (../sdk-shared-core)",
+      "Server on local ../restate (promise-objects branch)",
+      "No E2E integration test harness — SDK→shared-core VM tested, wire protocol→server tested separately",
+      "AsyncFn requires Rust 1.85+"
+    ],
+    "decisions": [
+      "StartRequest replaces RunRequest (rename, not new type). #[start] on non-shared Object/Workflow handlers controls which client methods return StartRequest",
+      "Invocation<T> with PhantomData<fn() -> T> — no Send/'static bounds on T. Cancellation removed entirely",
+      "get_output(&inv) on WorkflowContextT only — result-awaiting is a context capability, not on the handle",
+      "PromiseContextT is a new struct (not type alias) — unconditionally implements SealedCanResolve",
+      "Linking gated to T-suffix contexts only (ObjectContextT, PromiseContextT, WorkflowContextT)",
+      "Promise Objects API supersedes prior Invocation/Cancellation design from sessions 5-7"
+    ],
+    "blockers": [],
+    "open_questions": [
+      "Should RunRequest be kept as a type alias for backward compat?",
+      "Should #[start] be required on at least one handler for PromiseContextT objects?"
+    ],
+    "risks": [
+      "Three repos need coordinated branches for PR (sdk-rust, sdk-shared-core, restate server)",
+      "No E2E wire protocol test — integration only verified at VM and server levels separately",
+      "Large API redesign may need extensive documentation updates for clarity"
+    ]
+  },
+  "working_set": {
+    "key_files": [
+      "src/context/mod.rs",
+      "src/context/request.rs",
+      "src/endpoint/context.rs",
+      "src/endpoint/mod.rs",
+      "src/lib.rs",
+      "macros/src/ast.rs",
+      "macros/src/generator.rs",
+      "macros/src/lib.rs",
+      "tests/promise_context_test.rs",
+      "tests/ui/start_on_shared.rs",
+      "tests/ui/start_on_service.rs",
+      "tests/ui/resolve_on_object_context.rs",
+      "test-services/src/promise_order.rs",
+      "docs/tasks/linked-workflows/kickoff/promise_objects_api_design.md"
+    ],
+    "active_ids": [],
+    "recent_commands": [
+      "cargo check --all-features",
+      "cargo test --all-features"
+    ]
+  },
+  "context": {
+    "wip_state": "uncommitted",
+    "last_commit": "5328938"
+  }
+}

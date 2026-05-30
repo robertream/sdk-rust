@@ -68,4 +68,10 @@ impl<F: InvocationHandle> InvocationHandle for InterceptErrorFuture<F> {
     fn cancel(&self) -> impl Future<Output = Result<(), TerminalError>> + Send {
         self.fut.cancel()
     }
+
+    fn resolve(
+        &self,
+    ) -> impl Future<Output = Result<crate::endpoint::Invocation, TerminalError>> + Send {
+        self.fut.resolve()
+    }
 }

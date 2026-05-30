@@ -7,13 +7,19 @@ use std::future::Future;
 use std::time::Duration;
 
 #[doc(hidden)]
+pub mod handler;
+#[doc(hidden)]
 pub mod macro_support;
 mod request;
 mod run;
 mod select;
 mod select_any;
 
-pub use request::{CallFuture, InvocationHandle, Request, RequestTarget};
+pub use request::{
+    CallFuture, CompletionHandlerFnT, Invocation, InvocationHandle, LinkHandle, LinkedRunRequest,
+    PromiseObjectRef, PromiseObjectRefT, PromiseObjectRefW, Request, RequestTarget, StartRequest,
+    StartRequestT,
+};
 pub use run::{RunClosure, RunFuture, RunRetryPolicy};
 pub use select_any::DurableFuturesUnordered;
 
@@ -153,6 +159,144 @@ impl<'ctx> From<(&'ctx ContextInternal, InputMetadata)> for ObjectContext<'ctx> 
     }
 }
 
+/// Typed object handler context. Carries the service type `S` for compile-time
+/// enforcement of [`on_completion`](StartRequestT::on_completion) handler resolution.
+///
+/// Enabled via `#[restate_sdk::object(ObjectContextT)]`. Provides all the same
+/// capabilities as [`ObjectContext`], plus typed completion handler support.
+pub struct ObjectContextT<'ctx, S> {
+    invocation_id: String,
+    key: String,
+    random_seed: u64,
+    #[cfg(feature = "rand")]
+    std_rng: rand::prelude::StdRng,
+    headers: HeaderMap,
+    pub(crate) inner: &'ctx ContextInternal,
+    _service: std::marker::PhantomData<S>,
+}
+
+impl<S> ObjectContextT<'_, S> {
+    /// Get invocation id.
+    pub fn invocation_id(&self) -> &str {
+        &self.invocation_id
+    }
+
+    /// Get object key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Get request headers.
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    /// Get request headers.
+    pub fn headers_mut(&mut self) -> &HeaderMap {
+        &mut self.headers
+    }
+}
+
+impl<'ctx, S: Send> ObjectContextT<'ctx, S> {
+    /// Create a typed workflow client. The returned client's `.run()` method
+    /// produces a [`StartRequestT`] carrying the parent type `S`, enabling
+    /// [`on_completion`](StartRequestT::on_completion) with same-object enforcement.
+    ///
+    /// This inherent method shadows [`ContextClient::workflow_client`] so that
+    /// `ObjectContextT` handlers automatically get typed completion support.
+    pub fn workflow_client<C: IntoWorkflowClient<'ctx>>(
+        &self,
+        key: impl Into<String>,
+    ) -> WorkflowClientT<'ctx, C, S> {
+        WorkflowClientT {
+            inner: C::create_client(self.inner, key.into()),
+            _parent: std::marker::PhantomData,
+        }
+    }
+
+    /// Create a typed object client. The returned client's `#[start]` handler methods
+    /// produce [`StartRequestT`] carrying the parent type `S`.
+    ///
+    /// This inherent method shadows [`ContextClient::object_client`] so that
+    /// `ObjectContextT` handlers automatically get typed start support.
+    pub fn object_client<C: IntoObjectClientT<'ctx, S>>(&self, key: impl Into<String>) -> C {
+        C::create_typed_client(self.inner, key.into())
+    }
+
+    /// Create a builder for linking to a promise object.
+    /// Supports `.on_completion()` for typed completion handlers.
+    pub fn promise_object<T: LinkedObject>(
+        &self,
+        key: impl Into<String>,
+    ) -> PromiseObjectRefT<'ctx, T, S> {
+        PromiseObjectRefT::new(self.inner, key.into())
+    }
+}
+
+/// A workflow client wrapper that threads the parent service type `S` to
+/// [`StartRequestT`] when calling `.run()`.
+///
+/// Non-run handler methods are accessible via `Deref`. The `.run()` method
+/// delegates to the macro-generated [`StartT`] impl, returning `StartRequestT`
+/// with same-object enforcement for `on_completion`.
+pub struct WorkflowClientT<'ctx, C, S> {
+    inner: C,
+    _parent: std::marker::PhantomData<(&'ctx (), S)>,
+}
+
+impl<C, S> std::ops::Deref for WorkflowClientT<'_, C, S> {
+    type Target = C;
+
+    fn deref(&self) -> &C {
+        &self.inner
+    }
+}
+
+impl<'ctx, C: StartT<'ctx>, S> WorkflowClientT<'ctx, C, S> {
+    /// Start the workflow `run` handler, returning a [`StartRequestT`] that
+    /// carries the parent type `S` for typed `on_completion`.
+    pub fn run(&self, req: C::Req) -> StartRequestT<'ctx, C::Req, C::Res, S> {
+        self.inner.start_typed(req)
+    }
+}
+
+/// Trait for workflow clients to provide a typed `run` method.
+/// Implemented by the macro for each workflow's client.
+#[doc(hidden)]
+pub trait StartT<'ctx> {
+    type Req;
+    type Res;
+
+    fn start_typed<S>(&self, req: Self::Req) -> StartRequestT<'ctx, Self::Req, Self::Res, S>;
+}
+
+impl<'ctx, S> From<(&'ctx ContextInternal, InputMetadata)> for ObjectContextT<'ctx, S> {
+    fn from(value: (&'ctx ContextInternal, InputMetadata)) -> Self {
+        Self {
+            invocation_id: value.1.invocation_id,
+            key: value.1.key,
+            random_seed: value.1.random_seed,
+            #[cfg(feature = "rand")]
+            std_rng: rand::prelude::SeedableRng::seed_from_u64(value.1.random_seed),
+            headers: value.1.headers,
+            inner: value.0,
+            _service: std::marker::PhantomData,
+        }
+    }
+}
+
+/// Trait for promise object service types. Defines the resolve output type.
+/// Implement on your concrete type when using `#[restate_sdk::object(PromiseContextT)]`.
+pub trait PromiseObject {
+    type Output: crate::serde::Serialize + crate::serde::Deserialize;
+}
+
+/// Trait linking a promise object impl type to its service name.
+/// Generated by `#[restate_sdk::promise]` on the impl block.
+pub trait LinkedObject: PromiseObject {
+    const SERVICE_NAME: &'static str;
+}
+
 /// Workflow shared handler context.
 pub struct SharedWorkflowContext<'ctx> {
     invocation_id: String,
@@ -244,6 +388,95 @@ impl WorkflowContext<'_> {
     /// Get request headers.
     pub fn headers_mut(&mut self) -> &HeaderMap {
         &mut self.headers
+    }
+}
+
+/// Typed workflow handler context. Carries the service type `S` for compile-time
+/// enforcement of linked workflow invocations from T-suffix contexts.
+///
+/// Enabled via `#[restate_sdk::workflow(WorkflowContextT)]`. Provides all the same
+/// capabilities as [`WorkflowContext`], plus typed client support for `start_linked()`.
+pub struct WorkflowContextT<'ctx, S> {
+    invocation_id: String,
+    key: String,
+    random_seed: u64,
+    #[cfg(feature = "rand")]
+    std_rng: rand::prelude::StdRng,
+    headers: HeaderMap,
+    pub(crate) inner: &'ctx ContextInternal,
+    _service: std::marker::PhantomData<S>,
+}
+
+impl<S> WorkflowContextT<'_, S> {
+    /// Get invocation id.
+    pub fn invocation_id(&self) -> &str {
+        &self.invocation_id
+    }
+
+    /// Get workflow key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Get request headers.
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    /// Get request headers.
+    pub fn headers_mut(&mut self) -> &HeaderMap {
+        &mut self.headers
+    }
+}
+
+impl<'ctx, S: Send> WorkflowContextT<'ctx, S> {
+    /// Create a typed workflow client. The returned client's `.run()` method
+    /// produces a [`StartRequestT`] carrying the parent type `S`, enabling
+    /// [`on_completion`](StartRequestT::on_completion) with same-object enforcement.
+    ///
+    /// This inherent method shadows [`ContextClient::workflow_client`] so that
+    /// `WorkflowContextT` handlers automatically get typed completion support.
+    pub fn workflow_client<C: IntoWorkflowClient<'ctx>>(
+        &self,
+        key: impl Into<String>,
+    ) -> WorkflowClientT<'ctx, C, S> {
+        WorkflowClientT {
+            inner: C::create_client(self.inner, key.into()),
+            _parent: std::marker::PhantomData,
+        }
+    }
+
+    /// Create a typed object client. The returned client's `#[start]` handler methods
+    /// produce [`StartRequestT`] carrying the parent type `S`.
+    ///
+    /// This inherent method shadows [`ContextClient::object_client`] so that
+    /// `WorkflowContextT` handlers automatically get typed start support.
+    pub fn object_client<C: IntoObjectClientT<'ctx, S>>(&self, key: impl Into<String>) -> C {
+        C::create_typed_client(self.inner, key.into())
+    }
+
+    /// Create a builder for linking to a promise object.
+    /// `.link()` returns a `LinkHandle<T>` with `.output()` for awaiting the result.
+    pub fn promise_object<T: LinkedObject>(
+        &self,
+        key: impl Into<String>,
+    ) -> PromiseObjectRefW<'ctx, T> {
+        PromiseObjectRefW::new(self.inner, key.into())
+    }
+}
+
+impl<'ctx, S> From<(&'ctx ContextInternal, InputMetadata)> for WorkflowContextT<'ctx, S> {
+    fn from(value: (&'ctx ContextInternal, InputMetadata)) -> Self {
+        Self {
+            invocation_id: value.1.invocation_id,
+            key: value.1.key,
+            random_seed: value.1.random_seed,
+            #[cfg(feature = "rand")]
+            std_rng: rand::prelude::SeedableRng::seed_from_u64(value.1.random_seed),
+            headers: value.1.headers,
+            inner: value.0,
+            _service: std::marker::PhantomData,
+        }
     }
 }
 
@@ -476,9 +709,9 @@ pub trait ContextClient<'ctx>: private::SealedContext<'ctx> {
         Request::new(self.inner_context(), request_target, req)
     }
 
-    /// Create an [`InvocationHandle`] from an invocation id.
-    fn invocation_handle(&self, invocation_id: String) -> impl InvocationHandle + 'ctx {
-        self.inner_context().invocation_handle(invocation_id)
+    /// Create an [`Invocation`] from an invocation id.
+    fn invocation(&self, invocation_id: String) -> Invocation {
+        self.inner_context().invocation(invocation_id)
     }
 
     /// Create a service client. The service client is generated by the [`restate_sdk_macros::service`] macro with the same name of the trait suffixed with `Client`.
@@ -573,6 +806,16 @@ pub trait ContextClient<'ctx>: private::SealedContext<'ctx> {
     {
         C::create_client(self.inner_context(), key.into())
     }
+
+    /// Unlink a child service. The child continues running independently,
+    /// and no longer blocks the parent's completion.
+    fn unlink<C: KeyedClient<'ctx>>(
+        &self,
+        key: impl Into<String>,
+    ) -> impl Future<Output = Result<(), TerminalError>> + Send {
+        self.inner_context()
+            .unlink_service(C::SERVICE_NAME, key.into())
+    }
 }
 
 /// Base trait for all generated service clients. Provides the service name.
@@ -592,6 +835,12 @@ pub trait KeyedClient<'ctx>: ServiceClient + Sized {
 
 /// Trait used by codegen to use the object client.
 pub trait IntoObjectClient<'ctx>: KeyedClient<'ctx> {}
+
+/// Trait used by codegen to use the typed object client wrapper.
+#[doc(hidden)]
+pub trait IntoObjectClientT<'ctx, S>: Sized {
+    fn create_typed_client(ctx: &'ctx ContextInternal, key: String) -> Self;
+}
 
 /// Trait used by codegen to use the workflow client.
 pub trait IntoWorkflowClient<'ctx>: KeyedClient<'ctx> {}
@@ -995,6 +1244,35 @@ impl<'ctx, CTX: private::SealedContext<'ctx> + private::SealedCanUsePromises> Co
 {
 }
 
+/// Capability trait for resolving a promise object, signaling completion to the parent.
+///
+/// Available on [`ObjectContextT<'_, S>`] when `S: PromiseObject`. Resolving signals the
+/// parent workflow and makes the object's state immutable (server-enforced).
+pub trait ContextResolve<'ctx>: private::SealedContext<'ctx> + private::SealedCanResolve {
+    /// Resolve the promise object with a successful result value.
+    /// The type is enforced by `PromiseObject::Output` on the service type.
+    fn resolve(
+        &self,
+        result: <Self as private::SealedCanResolve>::Output,
+    ) -> impl Future<Output = Result<(), TerminalError>> + Send {
+        self.inner_context().resolve(result)
+    }
+
+    /// Resolve the promise object with a failure.
+    fn resolve_failure(
+        &self,
+        msg: impl Into<String>,
+        code: u16,
+    ) -> impl Future<Output = Result<(), TerminalError>> + Send {
+        self.inner_context().resolve_failure(msg.into(), code)
+    }
+}
+
+impl<'ctx, CTX: private::SealedContext<'ctx> + private::SealedCanResolve> ContextResolve<'ctx>
+    for CTX
+{
+}
+
 pub trait DurableFuture: Future + macro_support::SealedDurableFuture {}
 
 pub(crate) mod private {
@@ -1012,6 +1290,9 @@ pub(crate) mod private {
     pub trait SealedCanReadState {}
     pub trait SealedCanWriteState {}
     pub trait SealedCanUsePromises {}
+    pub trait SealedCanResolve {
+        type Output: crate::serde::Serialize;
+    }
 
     impl<'ctx> SealedContext<'ctx> for Context<'ctx> {
         fn inner_context(&self) -> &'ctx ContextInternal {
@@ -1063,6 +1344,31 @@ pub(crate) mod private {
     impl SealedCanReadState for ObjectContext<'_> {}
     impl SealedCanWriteState for ObjectContext<'_> {}
 
+    impl<'ctx, S> SealedContext<'ctx> for ObjectContextT<'ctx, S>
+    where
+        S: Send,
+    {
+        fn inner_context(&self) -> &'ctx ContextInternal {
+            self.inner
+        }
+
+        fn random_seed(&self) -> u64 {
+            self.random_seed
+        }
+
+        #[cfg(feature = "rand")]
+        fn rand(&mut self) -> &mut rand::prelude::StdRng {
+            &mut self.std_rng
+        }
+    }
+
+    impl<S: Send> SealedCanReadState for ObjectContextT<'_, S> {}
+    impl<S: Send> SealedCanWriteState for ObjectContextT<'_, S> {}
+    impl<S: Send + PromiseObject> SealedCanResolve for ObjectContextT<'_, S> {
+        type Output = <S as PromiseObject>::Output;
+    }
+    impl<S: Send + PromiseObject> SealedCanUsePromises for ObjectContextT<'_, S> {}
+
     impl<'ctx> SealedContext<'ctx> for SharedWorkflowContext<'ctx> {
         fn inner_context(&self) -> &'ctx ContextInternal {
             self.inner
@@ -1099,4 +1405,26 @@ pub(crate) mod private {
     impl SealedCanReadState for WorkflowContext<'_> {}
     impl SealedCanWriteState for WorkflowContext<'_> {}
     impl SealedCanUsePromises for WorkflowContext<'_> {}
+
+    impl<'ctx, S> SealedContext<'ctx> for WorkflowContextT<'ctx, S>
+    where
+        S: Send,
+    {
+        fn inner_context(&self) -> &'ctx ContextInternal {
+            self.inner
+        }
+
+        fn random_seed(&self) -> u64 {
+            self.random_seed
+        }
+
+        #[cfg(feature = "rand")]
+        fn rand(&mut self) -> &mut rand::prelude::StdRng {
+            &mut self.std_rng
+        }
+    }
+
+    impl<S: Send> SealedCanReadState for WorkflowContextT<'_, S> {}
+    impl<S: Send> SealedCanWriteState for WorkflowContextT<'_, S> {}
+    impl<S: Send> SealedCanUsePromises for WorkflowContextT<'_, S> {}
 }

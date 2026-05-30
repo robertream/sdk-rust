@@ -1,0 +1,72 @@
+{
+  "version": "1.1",
+  "timestamp": "2026-05-28-163407",
+  "branch_name": "linked-services",
+  "task_name": "linked-services",
+  "session_number": 1,
+  "progress_update": {
+    "summary": "We refactored the handler name resolution system from a runtime closure on ContextInternal to a trait-based design using NameResolution<S> + NamedService. Introduced a #[restate_sdk::completion] macro that bridges concrete types to their resolvers. Also introduced ServiceClient/KeyedClient trait hierarchy (backported to PR #100), made unlink async, and rebased linked-services on client-macro with upstream main merged.",
+    "goal": "Linked workflows feature for Restate Rust SDK — parent-child service linking with typed completion handlers, promise objects, and compile-time safety enforcement",
+    "accomplished": [
+      "Introduced ServiceClient trait with SERVICE_NAME const, KeyedClient hierarchy, backported to PR #100 (client-macro branch)",
+      "Replaced runtime HandlerResolver closure with trait-based NameResolution<S> + NamedService design — no runtime state on ContextInternal",
+      "Added #[restate_sdk::completion] proc macro that generates NamedService impl connecting concrete types to their resolver",
+      "Made unlink async — properly awaits sys_unlink_service NotificationHandle instead of discarding it",
+      "Rebased linked-services on client-macro (which includes upstream main merge), all tests passing via just verify"
+    ],
+    "now": "Session ended after implementing async unlink. User confirmed next step is implementing link_object (sys_link_service syscall for linking to already-running objects).",
+    "next_steps": [
+      "Implement link_object using sys_link_service — ctx.link_object::<OrderClient>('key').on_completion(Self::handler).await",
+      "Decide final name for #[restate_sdk::completion] macro (alternatives: linked, handlers, object_impl)",
+      "Consider implementing the type_name full-string matching (strip_prefix approach from prototype) vs current rsplit approach",
+      "Commit async unlink changes and run sweep"
+    ],
+    "confidence": "high",
+    "constraints": [
+      "Orphan rules prevent blanket impl<T: Trait> NameResolution for T — requires #[completion] macro bridge",
+      "type_name format not guaranteed by Rust spec but stable in practice for function items",
+      "NameResolution only generated for Object service types currently, not workflows"
+    ],
+    "decisions": [
+      "NameResolution<S> trait on per-service resolver struct (orphan-safe) + NamedService associated type to connect concrete types",
+      "resolve() returns &'static str (infallible) with unreachable!() guard — CompletionHandlerFnT guarantees correctness",
+      "NamedService not a supertrait — only bound on on_completion, so #[completion] only needed when using on_completion",
+      "ServiceClient::SERVICE_NAME as const &'static str, KeyedClient for keyed services, IntoObjectClient/IntoWorkflowClient as markers",
+      "unlink is async, awaits NotificationHandle from sys_unlink_service"
+    ],
+    "blockers": [],
+    "open_questions": [
+      "Final name for #[restate_sdk::completion] macro",
+      "Should NameResolution also be generated for Workflow service types?"
+    ],
+    "risks": [
+      "type_name format could change in future Rust versions — mitigated by prototype test validation"
+    ]
+  },
+  "working_set": {
+    "key_files": [
+      "src/context/handler.rs",
+      "src/context/mod.rs",
+      "src/context/request.rs",
+      "src/endpoint/context.rs",
+      "macros/src/generator.rs",
+      "macros/src/lib.rs",
+      "src/lib.rs",
+      "examples/linked_services.rs",
+      "tests/named_service_prototype.rs",
+      "tests/type_name_resolver.rs"
+    ],
+    "active_ids": [],
+    "recent_commands": [
+      "just verify",
+      "cargo test",
+      "TRYBUILD=overwrite cargo test",
+      "cargo fmt --all",
+      "cargo clippy"
+    ]
+  },
+  "context": {
+    "wip_state": "uncommitted",
+    "last_commit": "f9f0802"
+  }
+}

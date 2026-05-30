@@ -1,0 +1,30 @@
+error[E0277]: the trait bound `FakeImpl: LinkedObject` is not satisfied
+  --> tests/ui/promise_on_non_promise.rs:20:30
+   |
+20 |         ctx.promise_object::<FakeImpl>("key").link().await?;
+   |             --------------   ^^^^^^^^ the trait `LinkedObject` is not implemented for `FakeImpl`
+   |             |
+   |             required by a bound introduced by this call
+   |
+note: required by a bound in `restate_sdk::context::ObjectContextT::<'ctx, S>::promise_object`
+  --> src/context/mod.rs
+   |
+   |     pub fn promise_object<T: LinkedObject>(
+   |                              ^^^^^^^^^^^^ required by this bound in `ObjectContextT::<'ctx, S>::promise_object`
+
+error[E0599]: the method `link` exists for struct `PromiseObjectRefT<'_, FakeImpl, ParentImpl>`, but its trait bounds were not satisfied
+  --> tests/ui/promise_on_non_promise.rs:20:47
+   |
+18 |         struct FakeImpl;
+   |         --------------- doesn't satisfy `FakeImpl: LinkedObject`
+19 |         // FakeImpl doesn't implement LinkedObject
+20 |         ctx.promise_object::<FakeImpl>("key").link().await?;
+   |                                               ^^^^ method cannot be called on `PromiseObjectRefT<'_, FakeImpl, ParentImpl>` due to unsatisfied trait bounds
+   |
+   = note: the following trait bounds were not satisfied:
+           `FakeImpl: LinkedObject`
+note: the trait `LinkedObject` must be implemented
+  --> src/context/mod.rs
+   |
+   | pub trait LinkedObject: PromiseObject {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

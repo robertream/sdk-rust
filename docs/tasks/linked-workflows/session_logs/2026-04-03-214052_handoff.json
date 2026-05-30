@@ -1,0 +1,65 @@
+{
+  "version": "1.1",
+  "timestamp": "2026-04-03-214052",
+  "branch_name": "linked-workflows",
+  "task_name": "linked-workflows",
+  "session_number": 1,
+  "progress_update": {
+    "summary": "We researched the linked-workflows branch in the Restate server, identified all protocol changes (CreateLink/RemoveLink commands + completion notification), and designed the user-facing SDK API through iterative discussion. API decision is locked: run_linked() as a terminal-like entry on Request builder, unlink() on workflow client. We started planning the TDD approach and identified test surfaces (tests/service.rs, tests/ui/, test-services/). Were mid-planning when session ended — specifically answering how to handle the shared-core dependency for tests.",
+    "goal": "Add linked workflow support to the Rust SDK with TDD approach. Success: run_linked().send() and unlink() work on workflow clients, backed by CreateLinkCommand/RemoveLinkCommand protocol messages.",
+    "accomplished": [
+      "Researched ../restate linked-workflows branch — identified all protocol changes (CreateLinkCommandMessage 0x0415, RemoveLinkCommandMessage 0x0422, CreateLinkCompletionNotificationMessage 0x8015)",
+      "Researched ../restate/docs — full design docs, RFCs, code reviews, implementation plans for linked workflows",
+      "Designed and decided user API: run_linked(req).send() on workflow clients, unlink() fire-and-forget, linked: bool flag on Request struct",
+      "Saved API decision to project memory (decision_linked_workflows_api.md)",
+      "Created linked-workflows branch from client-macro, wrote task_context.md with full research",
+      "Identified TDD test surfaces: tests/service.rs (compile), tests/ui/ (negative compile), test-services/ (integration)"
+    ],
+    "now": "Mid-way through /spectre:plan workflow — completed research (Step 1), reached clarification (Step 2) about how to handle the shared-core 0.7.1 dependency which lacks sys_create_link/sys_remove_link. User asked where shared-core lives (which GitHub repo) before answering.",
+    "next_steps": [
+      "Answer: find where restate-sdk-shared-core is sourced (crates.io? git dep? local path?) and determine if we can fork/extend it",
+      "Complete the planning workflow — write plan.md and tasks.md",
+      "Write red TDD tests: tests/service.rs (run_linked exists on workflow client), test-services/linked_workflow.rs (integration service)",
+      "Implement: Request.linked field, macro codegen for run_linked()/unlink(), ContextInternal.send() linked path"
+    ],
+    "confidence": "high",
+    "constraints": [
+      "shared-core 0.7.1 doesn't have sys_create_link/sys_remove_link — need to figure out dependency strategy",
+      "No MockVM in codebase — tests are either compile-time or full integration with real Restate"
+    ],
+    "decisions": [
+      "API: run_linked(req) on workflow client returns Request with linked:bool=true, .send() emits both OneWayCallCommand + CreateLinkCommand",
+      "API: unlink() on workflow client, fire-and-forget, emits RemoveLinkCommand",
+      "API: .send() returns impl InvocationHandle regardless of linked flag — CreateLink completion handled internally"
+    ],
+    "blockers": [
+      "Need to determine shared-core dependency source to decide how to add new VM methods"
+    ],
+    "open_questions": [
+      "Where is restate-sdk-shared-core hosted? Can we add it as a local workspace member or path dependency?",
+      "Should TDD tests stub VM methods, fork shared-core locally, or test only macro/Request layer first?"
+    ],
+    "risks": [
+      "Server-side linked-workflows has known critical bugs (VO parent wrong InvocationId, cancel not propagating to linked children) — may affect integration testing"
+    ]
+  },
+  "working_set": {
+    "key_files": [
+      "docs/tasks/linked-workflows/task_context.md",
+      "src/context/request.rs",
+      "src/context/mod.rs",
+      "src/endpoint/context.rs",
+      "macros/src/generator.rs",
+      "tests/service.rs"
+    ],
+    "active_ids": [],
+    "recent_commands": [
+      "git checkout -b linked-workflows",
+      "mkdir -p docs/tasks/linked-workflows"
+    ]
+  },
+  "context": {
+    "wip_state": "uncommitted",
+    "last_commit": "6030b34"
+  }
+}

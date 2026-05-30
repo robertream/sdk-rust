@@ -12,7 +12,7 @@ use crate::service::Service;
 use ::futures::future::BoxFuture;
 use ::futures::{FutureExt, Stream, StreamExt, TryStreamExt};
 use bytes::Bytes;
-pub use context::{ContextInternal, InputMetadata};
+pub use context::{ContextInternal, InputMetadata, Invocation};
 use http::header::CONTENT_TYPE;
 use http::{HeaderName, HeaderValue};
 use http_body::{Body, Frame, SizeHint};

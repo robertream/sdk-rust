@@ -99,7 +99,7 @@ impl TestUtilsService for TestUtilsServiceImpl {
         ctx: Context<'_>,
         invocation_id: String,
     ) -> Result<(), TerminalError> {
-        ctx.invocation_handle(invocation_id).cancel().await?;
+        ctx.invocation(invocation_id).cancel().await?;
         Ok(())
     }
 }

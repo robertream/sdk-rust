@@ -4,9 +4,12 @@ mod cancel_test;
 mod counter;
 mod failing;
 mod kill_test;
+mod linked_services;
+mod linked_workflow;
 mod list_object;
 mod map_object;
 mod non_deterministic;
+mod promise_order;
 mod proxy;
 mod test_utils_service;
 mod virtual_object_command_interpreter;
@@ -57,6 +60,20 @@ async fn main() {
     if services == "*" || services.contains("Failing") {
         builder = builder.bind(failing::Failing::serve(failing::FailingImpl::default()))
     }
+    if services == "*" || services.contains("PromiseOrder") {
+        builder = builder.bind(promise_order::PromiseOrder::serve(
+            promise_order::PromiseOrderImpl,
+        ))
+    }
+    if services == "*" || services.contains("LinkedWorkflowParent") {
+        builder = builder
+            .bind(linked_workflow::LinkedWorkflowParent::serve(
+                linked_workflow::LinkedWorkflowParentImpl,
+            ))
+            .bind(linked_workflow::LinkedWorkflowChild::serve(
+                linked_workflow::LinkedWorkflowChildImpl,
+            ))
+    }
     if services == "*" || services.contains("KillTestRunner") {
         builder = builder.bind(kill_test::KillTestRunner::serve(
             kill_test::KillTestRunnerImpl,
@@ -83,6 +100,26 @@ async fn main() {
                 virtual_object_command_interpreter::VirtualObjectCommandInterpreterImpl,
             ),
         )
+    }
+    if services == "*" || services.contains("LinkedPromiseOrder") {
+        builder = builder.bind(linked_services::LinkedPromiseOrder::serve(
+            linked_services::LinkedPromiseOrderImpl,
+        ))
+    }
+    if services == "*" || services.contains("LinkedAgent") {
+        builder = builder.bind(linked_services::LinkedAgent::serve(
+            linked_services::LinkedAgentImpl,
+        ))
+    }
+    if services == "*" || services.contains("LinkedOrchestrator") {
+        builder = builder.bind(linked_services::LinkedOrchestrator::serve(
+            linked_services::LinkedOrchestratorImpl,
+        ))
+    }
+    if services == "*" || services.contains("LinkedWorkflowTest") {
+        builder = builder.bind(linked_services::LinkedWorkflowTest::serve(
+            linked_services::LinkedWorkflowTestImpl,
+        ))
     }
 
     if let Ok(key) = env::var("E2E_REQUEST_SIGNING_ENV") {

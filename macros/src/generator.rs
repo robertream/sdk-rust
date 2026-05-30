@@ -3,6 +3,19 @@ use proc_macro2::TokenStream as TokenStream2;
 use proc_macro2::{Ident, Literal};
 use quote::{ToTokens, format_ident, quote};
 
+/// Which context type to use for exclusive (non-shared) handlers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ContextOption {
+    /// Default context (`ObjectContext` or `WorkflowContext`).
+    Plain,
+    /// `ObjectContextT<'_, Self>` — enables typed workflow/object client.
+    ObjectContextT,
+    /// `PromiseContextT<'_, Self>` — typed client + resolve capability.
+    PromiseContextT,
+    /// `WorkflowContextT<'_, Self>` — typed workflow/object client for workflows.
+    WorkflowContextT,
+}
+
 pub(crate) struct ServiceGenerator<'a> {
     service: ServiceScope<'a>,
     handlers: Vec<HandlerScope<'a>>,
@@ -10,20 +23,23 @@ pub(crate) struct ServiceGenerator<'a> {
 
 impl<'a> ServiceGenerator<'a> {
     pub(crate) fn new_service(s: &'a Service) -> Self {
-        Self::new(ServiceType::Service, &s.0)
+        Self::new(ServiceType::Service, &s.0, ContextOption::Plain)
     }
 
-    pub(crate) fn new_object(s: &'a Object) -> Self {
-        Self::new(ServiceType::Object, &s.0)
+    pub(crate) fn new_object_with_options(s: &'a Object, context_option: ContextOption) -> Self {
+        Self::new(ServiceType::Object, &s.0, context_option)
     }
 
-    pub(crate) fn new_workflow(s: &'a Workflow) -> Self {
-        Self::new(ServiceType::Workflow, &s.0)
+    pub(crate) fn new_workflow_with_options(
+        s: &'a Workflow,
+        context_option: ContextOption,
+    ) -> Self {
+        Self::new(ServiceType::Workflow, &s.0, context_option)
     }
 
-    fn new(service_ty: ServiceType, s: &'a ServiceInner) -> Self {
+    fn new(service_ty: ServiceType, s: &'a ServiceInner, context_option: ContextOption) -> Self {
         ServiceGenerator {
-            service: ServiceScope::new(service_ty, s),
+            service: ServiceScope::new(service_ty, s, context_option),
             handlers: s.handlers.iter().map(HandlerScope::from_handler).collect(),
         }
     }
@@ -60,6 +76,11 @@ impl<'a> ServiceGenerator<'a> {
     fn impl_ingress(&self) -> TokenStream2 {
         self.service.impl_ingress_tokens(self.handlers.iter())
     }
+
+    fn impl_handler_name_resolution(&self) -> TokenStream2 {
+        self.service
+            .impl_handler_name_resolution_tokens(self.handlers.iter())
+    }
 }
 
 impl ToTokens for ServiceGenerator<'_> {
@@ -73,6 +94,7 @@ impl ToTokens for ServiceGenerator<'_> {
             self.impl_client(),
             self.struct_ingress(),
             self.impl_ingress(),
+            self.impl_handler_name_resolution(),
         ]);
     }
 }
@@ -82,14 +104,23 @@ struct ServiceScope<'a> {
     service: &'a ServiceInner,
     service_literal: Literal,
     client_ident: Ident,
+    object_client_t_ident: Ident,
+    handler_resolution_ident: Ident,
     ingress_ident: Ident,
     serve_ident: Ident,
+    context_option: ContextOption,
 }
 
 impl ServiceScope<'_> {
-    fn new<'a>(service_ty: ServiceType, s: &'a ServiceInner) -> ServiceScope<'a> {
+    fn new<'a>(
+        service_ty: ServiceType,
+        s: &'a ServiceInner,
+        context_option: ContextOption,
+    ) -> ServiceScope<'a> {
         let service_literal = Literal::string(&s.restate_name);
         let client_ident = format_ident!("{}Client", s.ident);
+        let object_client_t_ident = format_ident!("{}ObjectClientT", s.ident);
+        let handler_resolution_ident = format_ident!("{}HandlerNameResolution", s.ident);
         let ingress_ident = format_ident!("Ingress{}", s.ident);
         let serve_ident = format_ident!("Serve{}", s.ident);
 
@@ -98,8 +129,11 @@ impl ServiceScope<'_> {
             service: s,
             service_literal,
             client_ident,
+            object_client_t_ident,
+            handler_resolution_ident,
             ingress_ident,
             serve_ident,
+            context_option,
         }
     }
 
@@ -147,9 +181,7 @@ impl ServiceScope<'_> {
     ) -> TokenStream2 {
         let serve_ident = &self.serve_ident;
         let service_ident = &self.service.ident;
-        let match_arms = handlers
-            .into_iter()
-            .map(HandlerScope::serve_match_arm_tokens);
+        let match_arms = handlers.into_iter().map(|h| h.serve_match_arm_tokens());
 
         quote! {
             impl<S> ::restate_sdk::service::Service for #serve_ident<S>
@@ -364,18 +396,169 @@ impl ServiceScope<'_> {
         handlers: impl IntoIterator<Item = &'a HandlerScope<'a>>,
     ) -> TokenStream2 {
         let client_ident = &self.client_ident;
-        let handlers_fns = handlers
-            .into_iter()
-            .map(|handler| handler.client_method_tokens(self));
+        let handlers: Vec<_> = handlers.into_iter().collect();
+        let handlers_fns = handlers.iter().map(|h| h.client_method_tokens(self));
         let service_ident = &self.service.ident;
         let doc_msg = format!(
             "Struct exposing the client to invoke [`{service_ident}`] from another service."
         );
 
+        // For workflow types, generate StartT impl for the run handler.
+        // This allows WorkflowClientT::run() to return StartRequestT.
+        let typed_run_impl = if self.service_ty == ServiceType::Workflow {
+            if let Some(run_handler) = handlers
+                .iter()
+                .find(|h| !h.handler.is_shared && h.handler.restate_name == "run")
+            {
+                let argument_ty = run_handler.argument_type_tokens();
+                let response_ty = &run_handler.handler.output_ok;
+                let request_target = run_handler.context_request_target_tokens(self);
+                let input = run_handler.input_tokens();
+
+                quote! {
+                    impl<'ctx> ::restate_sdk::context::StartT<'ctx> for #client_ident<'ctx> {
+                        type Req = #argument_ty;
+                        type Res = #response_ty;
+
+                        fn start_typed<S>(&self, req: Self::Req) -> ::restate_sdk::context::StartRequestT<'ctx, Self::Req, Self::Res, S> {
+                            ::restate_sdk::context::StartRequestT::new(self.ctx, #request_target, #input)
+                        }
+                    }
+                }
+            } else {
+                quote! {}
+            }
+        } else {
+            quote! {}
+        };
+
+        // Generate typed ObjectClientT for objects/workflows that have #[start] handlers.
+        // This wrapper overrides #[start] methods to return StartRequestT, enabling start_linked()
+        // and on_completion() from T-suffix contexts.
+        let object_client_t_impl = self.object_client_t_tokens(handlers.iter().copied());
+
         quote! {
             #[doc = #doc_msg]
             impl<'ctx> #client_ident<'ctx> {
                 #( #handlers_fns )*
+            }
+
+            #typed_run_impl
+            #object_client_t_impl
+        }
+    }
+
+    /// Generates the `{Service}ObjectClientT<'ctx, S>` wrapper struct and its impl.
+    ///
+    /// Emitted for all object and workflow service types. The wrapper:
+    /// - Stores the inner client and a `PhantomData<S>` for the parent service type.
+    /// - Implements `Deref` to the inner client to expose all regular handler methods.
+    /// - For workflows, overrides the `run` handler to return `StartRequestT<'ctx, Req, Res, S>`.
+    /// - Implements `IntoObjectClientT<'ctx, S>` so T-suffix contexts can create it.
+    fn object_client_t_tokens<'a>(
+        &self,
+        handlers: impl IntoIterator<Item = &'a HandlerScope<'a>>,
+    ) -> TokenStream2 {
+        if self.service_ty == ServiceType::Service {
+            return quote! {};
+        }
+
+        let handlers: Vec<_> = handlers.into_iter().collect();
+
+        // Collect the non-shared start handlers (workflow `run` only).
+        let start_handlers: Vec<_> = handlers
+            .iter()
+            .filter(|h| h.handler.is_start && !h.handler.is_shared)
+            .collect();
+
+        let vis = &self.service.vis;
+        let client_ident = &self.client_ident;
+        let object_client_t_ident = &self.object_client_t_ident;
+        let service_ident = &self.service.ident;
+        let doc_msg = format!(
+            "Typed client wrapper for [`{service_ident}`]. \
+             Implements `IntoObjectClientT` so it can be used from T-suffix contexts via `ctx.object_client()`."
+        );
+
+        // Generate override methods for start handlers (workflow `run`).
+        let start_method_overrides = start_handlers.iter().map(|h| {
+            let handler_ident = &h.handler.ident;
+            let argument = h.argument_tokens();
+            let argument_ty = h.argument_type_tokens();
+            let response_ty = &h.handler.output_ok;
+            let request_target = h.context_request_target_tokens_on_inner(self);
+            let input = h.input_tokens();
+
+            quote! {
+                #vis fn #handler_ident(&self, #argument) -> ::restate_sdk::context::StartRequestT<'ctx, #argument_ty, #response_ty, S> {
+                    ::restate_sdk::context::StartRequestT::new(self.inner.ctx, #request_target, #input)
+                }
+            }
+        });
+
+        quote! {
+            #[doc = #doc_msg]
+            #vis struct #object_client_t_ident<'ctx, S> {
+                inner: #client_ident<'ctx>,
+                _parent: ::std::marker::PhantomData<(&'ctx (), S)>,
+            }
+
+            impl<'ctx, S> ::std::ops::Deref for #object_client_t_ident<'ctx, S> {
+                type Target = #client_ident<'ctx>;
+                fn deref(&self) -> &Self::Target {
+                    &self.inner
+                }
+            }
+
+            impl<'ctx, S> #object_client_t_ident<'ctx, S> {
+                #( #start_method_overrides )*
+            }
+
+            impl<'ctx, S> ::restate_sdk::context::IntoObjectClientT<'ctx, S> for #object_client_t_ident<'ctx, S> {
+                fn create_typed_client(ctx: &'ctx ::restate_sdk::endpoint::ContextInternal, key: String) -> Self {
+                    Self {
+                        inner: #client_ident { ctx, key },
+                        _parent: ::std::marker::PhantomData,
+                    }
+                }
+            }
+        }
+    }
+
+    /// Generate a per-service resolver struct and `NameResolution` impl.
+    /// Only emitted for object types (which support `on_completion`).
+    fn impl_handler_name_resolution_tokens<'a>(
+        &self,
+        handlers: impl IntoIterator<Item = &'a HandlerScope<'a>>,
+    ) -> TokenStream2 {
+        if self.service_ty != ServiceType::Object {
+            return quote! {};
+        }
+
+        let vis = &self.service.vis;
+        let service_ident = &self.service.ident;
+        let handler_resolution_ident = &self.handler_resolution_ident;
+        let resolver_arms = handlers.into_iter().map(|h| {
+            let rust_name = h.handler.ident.to_string();
+            let restate_name = &h.handler_literal;
+            quote! { #rust_name => #restate_name }
+        });
+
+        quote! {
+            #[doc(hidden)]
+            #vis struct #handler_resolution_ident;
+
+            impl<__T: #service_ident> ::restate_sdk::context::handler::NameResolution<__T> for #handler_resolution_ident {
+                fn resolve<__Res, __F: ::restate_sdk::context::CompletionHandlerFnT<__T, __Res>>() -> &'static str {
+                    let full = ::std::any::type_name::<__F>();
+                    // type_name for function items always contains "::" — extract the method name.
+                    // CompletionHandlerFnT<S, Res> guarantees F is a handler on S, and the match
+                    // arms are generated from the same trait definition, so this is infallible.
+                    match full.rsplit("::").next().unwrap() {
+                        #( #resolver_arms, )*
+                        method => unreachable!("handler '{method}' not in generated handler resolution"),
+                    }
+                }
             }
         }
     }
@@ -433,11 +616,24 @@ impl HandlerScope<'_> {
         match (service.service_ty, self.handler.is_shared) {
             (ServiceType::Service, _) => quote! { ::restate_sdk::prelude::Context },
             (ServiceType::Object, true) => quote! { ::restate_sdk::prelude::SharedObjectContext },
-            (ServiceType::Object, false) => quote! { ::restate_sdk::prelude::ObjectContext },
+            (ServiceType::Object, false) => match service.context_option {
+                ContextOption::ObjectContextT => {
+                    quote! { ::restate_sdk::prelude::ObjectContextT<'_, Self> }
+                }
+                ContextOption::PromiseContextT => {
+                    quote! { ::restate_sdk::prelude::ObjectContextT<'_, Self> }
+                }
+                _ => quote! { ::restate_sdk::prelude::ObjectContext },
+            },
             (ServiceType::Workflow, true) => {
                 quote! { ::restate_sdk::prelude::SharedWorkflowContext }
             }
-            (ServiceType::Workflow, false) => quote! { ::restate_sdk::prelude::WorkflowContext },
+            (ServiceType::Workflow, false) => match service.context_option {
+                ContextOption::WorkflowContextT => {
+                    quote! { ::restate_sdk::prelude::WorkflowContextT<'_, Self> }
+                }
+                _ => quote! { ::restate_sdk::prelude::WorkflowContext },
+            },
         }
     }
 
@@ -549,9 +745,22 @@ impl HandlerScope<'_> {
         let request_target = self.context_request_target_tokens(service);
         let input = self.input_tokens();
 
-        quote! {
-            #vis fn #handler_ident(&self, #argument) -> ::restate_sdk::context::Request<'ctx, #argument_ty, #response_ty> {
-                self.ctx.request(#request_target, #input)
+        // Workflow run handler returns StartRequest (which has .start_linked())
+        let is_workflow_run = service.service_ty == ServiceType::Workflow
+            && !self.handler.is_shared
+            && self.handler.restate_name == "run";
+
+        if is_workflow_run {
+            quote! {
+                #vis fn #handler_ident(&self, #argument) -> ::restate_sdk::context::StartRequest<'ctx, #argument_ty, #response_ty> {
+                    self.ctx.start_request(#request_target, #input)
+                }
+            }
+        } else {
+            quote! {
+                #vis fn #handler_ident(&self, #argument) -> ::restate_sdk::context::Request<'ctx, #argument_ty, #response_ty> {
+                    self.ctx.request(#request_target, #input)
+                }
             }
         }
     }
@@ -582,6 +791,24 @@ impl HandlerScope<'_> {
             },
             ServiceType::Workflow => quote! {
                 ::restate_sdk::context::RequestTarget::workflow(#service_literal, &self.key, #handler_literal)
+            },
+        }
+    }
+
+    /// Like `context_request_target_tokens` but accesses the key via `self.inner.key`,
+    /// for use in `ObjectClientT` methods that wrap an inner client.
+    fn context_request_target_tokens_on_inner(&self, service: &ServiceScope<'_>) -> TokenStream2 {
+        let service_literal = &service.service_literal;
+        let handler_literal = &self.handler_literal;
+        match service.service_ty {
+            ServiceType::Service => quote! {
+                ::restate_sdk::context::RequestTarget::service(#service_literal, #handler_literal)
+            },
+            ServiceType::Object => quote! {
+                ::restate_sdk::context::RequestTarget::object(#service_literal, &self.inner.key, #handler_literal)
+            },
+            ServiceType::Workflow => quote! {
+                ::restate_sdk::context::RequestTarget::workflow(#service_literal, &self.inner.key, #handler_literal)
             },
         }
     }

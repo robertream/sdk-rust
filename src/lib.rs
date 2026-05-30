@@ -508,6 +508,19 @@ pub use restate_sdk_macros::object;
 /// For more details, check the [`service` macro](macro@crate::service) documentation.
 pub use restate_sdk_macros::workflow;
 
+/// Attribute macro for service trait implementations. Generates the
+/// [`NamedService`](context::handler::NamedService) impl connecting the
+/// concrete type to its handler name resolver.
+///
+/// Required on `impl` blocks for object services that use `on_completion`.
+pub use restate_sdk_macros::completion;
+
+/// Attribute macro for service trait implementations. Generates a `LinkedObject`
+/// impl connecting the concrete type to its associated service client.
+///
+/// Required on `impl` blocks for object services that are used as promise objects.
+pub use restate_sdk_macros::promise;
+
 /// Prelude contains all the useful imports you need to get started with Restate.
 pub mod prelude {
     #[cfg(feature = "http_server")]
@@ -520,10 +533,11 @@ pub mod prelude {
 
     pub use crate::context::{
         CallFuture, Context, ContextAwakeables, ContextClient, ContextPromises, ContextReadState,
-        ContextSideEffects, ContextTimers, ContextWriteState, DurableFuturesUnordered, HeaderMap,
-        InvocationHandle, ObjectContext, Request, RunFuture, RunRetryPolicy, ServiceClient,
-        SharedObjectContext,
-        SharedWorkflowContext, WorkflowContext,
+        ContextResolve, ContextSideEffects, ContextTimers, ContextWriteState,
+        DurableFuturesUnordered, HeaderMap, Invocation, InvocationHandle, LinkHandle, LinkedObject,
+        ObjectContext, ObjectContextT, PromiseObject, Request, RunFuture, RunRetryPolicy,
+        ServiceClient, SharedObjectContext, SharedWorkflowContext, WorkflowContext,
+        WorkflowContextT,
     };
     pub use crate::endpoint::{
         Endpoint, HandleOptions, HandlerOptions, ProtocolMode, ServiceOptions,

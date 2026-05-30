@@ -1,0 +1,82 @@
+{
+  "version": "1.1",
+  "timestamp": "2026-04-07-080811",
+  "branch_name": "linked-workflows",
+  "task_name": "linked-workflows",
+  "session_number": 7,
+  "continuity": {
+    "started": "2026-04-03",
+    "sessions_reviewed": 3,
+    "arc_goal": "Add complete linked workflow support to the Rust SDK with proper type separation between VO and workflow contexts, full protocol integration, and commit consolidation ready for PR"
+  },
+  "progress_update": {
+    "summary": "We consolidated the entire linked-workflows branch from 31 commits down to a single squashed commit. Updated to latest sdk-shared-core proto (LinkedNotification renamed to LinkCompletionNotification, field reordering in LinkCommandMessage). Fixed LinkHandle compatibility issues during rebase — the shared-core API evolved from SendHandle to LinkHandle, requiring surgical fixes to intermediate commits before ultimately squashing everything together.",
+    "goal": "Complete linked workflow SDK with proper type separation between VO and workflow contexts, ready for PR",
+    "accomplished": [
+      "Updated to latest sdk-shared-core proto (LinkCompletionNotification rename, field reordering)",
+      "Planned and executed commit consolidation: 31 commits → 3 → 1 squashed commit",
+      "Fixed LinkHandle compatibility issues during rebase (sys_link returns LinkHandle not SendHandle)",
+      "Resolved merge conflicts across rebase steps",
+      "All 40 tests passing on final squashed commit"
+    ],
+    "now": "Commit consolidation complete. Single squashed commit 56f0718 verified with all tests passing.",
+    "next_steps": [
+      "Switch shared-core from path dep back to published version before PR",
+      "Remove docs/ working files from commit if not intended for PR",
+      "Create PR against appropriate base branch",
+      "Integration testing with Restate container when available"
+    ],
+    "confidence": "high",
+    "constraints": [
+      "shared-core on local path dependency (../sdk-shared-core)",
+      "Server changes on local ../restate",
+      "AsyncFn requires Rust 1.85+",
+      "std::any::type_name format not contractually stable",
+      "No mock VM in codebase — integration tests require real Restate container"
+    ],
+    "decisions": [
+      "Squashed all 31 commits into single commit rather than splitting typed completion handlers out (changes too interleaved in shared files)",
+      "Backup branch linked-workflows-backup preserved for safety",
+      "start_linked() returns impl Future (not DurableFuture) — link establishment is fast",
+      "result() returns impl DurableFuture — child completion can be long, needs select! support",
+      "Cancellation wraps Invocation via From — compile-time API narrowing for VO contexts",
+      "link() generic over T: From<Invocation> — type inference at call site",
+      "Invocation does NOT implement InvocationHandle — resolved vs unresolved separation",
+      "on_completion only via ObjectContextT path — no runtime panic risk",
+      "Handler input type: Result<T, TerminalError> where T: serde::Deserialize",
+      "T-suffix naming: ObjectContextT, RunRequestT, WorkflowClientT, RunT, CompletionHandlerFnT",
+      "sys_link returns LinkHandle with link_completion_handle",
+      "API: run_linked(req) on workflow client returns Request with linked:bool=true, .send() emits both OneWayCallCommand + CreateLinkCommand",
+      "API: unlink() on workflow client, fire-and-forget, emits RemoveLinkCommand",
+      "API: .send() returns impl InvocationHandle regardless of linked flag — CreateLink completion handled internally"
+    ],
+    "blockers": [],
+    "open_questions": [
+      "Should docs/ working files (session logs, reviews, specs) be excluded from the PR commit?",
+      "Should InvocationHandle::invocation_id() be removed since resolve() exists?"
+    ],
+    "risks": [
+      "Server-side linked-workflows has known bugs",
+      "Three repos need coordinated branches for PR"
+    ]
+  },
+  "working_set": {
+    "key_files": [
+      "src/endpoint/context.rs",
+      "src/endpoint/mod.rs",
+      "src/context/mod.rs",
+      "src/context/request.rs",
+      "src/lib.rs"
+    ],
+    "active_ids": [],
+    "recent_commands": [
+      "cargo check --all-features",
+      "cargo test --all-features",
+      "git rebase -i client-macro"
+    ]
+  },
+  "context": {
+    "wip_state": "clean",
+    "last_commit": "56f0718"
+  }
+}

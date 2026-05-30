@@ -1,0 +1,100 @@
+{
+  "version": "1.1",
+  "timestamp": "2026-04-06-142108",
+  "branch_name": "linked-workflows",
+  "task_name": "linked-workflows",
+  "session_number": 5,
+  "continuity": {
+    "started": "2026-04-03",
+    "sessions_reviewed": 3,
+    "arc_goal": "Add complete linked workflow support to the Rust SDK with proper type separation, compile-time validation, and awaitable child results across contexts"
+  },
+  "progress_update": {
+    "summary": "We refined the linked workflows API significantly: added Invocation and Cancellation types with proper separation — Invocation (workflow path) has id(), cancel(), result::<T>() as DurableFuture; Cancellation (VO path) wraps Invocation, only exposes id() and cancel(). Added resolve() to InvocationHandle for resolving to Invocation. Made link() generic over T: From<Invocation> so VO paths return Cancellation and workflow paths return Invocation, all as DurableFuture. Fixed server-side JSON Result envelope for completion handler arguments. Added serde derives to TerminalError. Multiple code reviews addressed.",
+    "goal": "Complete linked workflow SDK with proper type separation between VO and workflow contexts",
+    "accomplished": [
+      "Added Invocation type: id(), cancel(), result::<T>() as DurableFuture (selectable)",
+      "Added Cancellation type: wraps Invocation, narrows API to id() + cancel() only",
+      "VO start_linked() returns Cancellation, workflow start_linked() returns Invocation",
+      "link() generic over T: From<Invocation> — type inference selects return type",
+      "Added resolve(&self) to InvocationHandle — returns Invocation from any handle",
+      "Removed InvocationIdBackedInvocationHandle — unified into Invocation",
+      "Invocation no longer implements InvocationHandle (clean separation)",
+      "Renamed invocation_handle() → invocation() returning Invocation directly",
+      "DurableFuture + SealedDurableFuture impls for TrapFuture and Either",
+      "Server: JSON Result envelope with RawValue for completion handler args",
+      "SDK: serde derives on TerminalError, Result<T, TerminalError> delegates to serde_json",
+      "shared-core: LinkHandle type, sys_link returns LinkHandle",
+      "Fixed missing maybe_flip_span_replaying_field in cancel",
+      "Exported Invocation and Cancellation in prelude",
+      "Two code reviews addressed all findings"
+    ],
+    "now": "All types implemented and tested. Clean commit history ready for squash/PR.",
+    "next_steps": [
+      "Squash commit history before PR — many iterative commits",
+      "Integration testing with Restate container",
+      "Consider whether InvocationHandle trait still needs invocation_id() — resolve() supersedes it",
+      "Add compile tests exercising resolve() and Invocation::result() API"
+    ],
+    "confidence": "high",
+    "constraints": [
+      "shared-core on local path dependency (../sdk-shared-core) on linked-workflows branch",
+      "Server changes on local ../restate on linked-workflows branch",
+      "AsyncFn requires Rust 1.85+",
+      "std::any::type_name format not contractually stable"
+    ],
+    "decisions": [
+      "Cancellation wraps Invocation via From, narrows API — no result() on VO path",
+      "link() is generic over T: From<Invocation> — call site determines return type",
+      "Invocation does NOT implement InvocationHandle — clean resolved/unresolved separation",
+      "invocation_handle() renamed to invocation(), returns Invocation directly",
+      "resolve() is &self not self — avoids consuming pinned futures",
+      "Result<T, TerminalError> serde delegates to serde_json (both sides)",
+      "Server encodes completion args as JSON Result envelope with RawValue",
+      "on_completion only via ObjectContextT path — no runtime panic risk",
+      "Handler input type: Result<T, TerminalError> where T: serde::Deserialize",
+      "T-suffix naming: ObjectContextT, RunRequestT, WorkflowClientT, RunT, CompletionHandlerFnT",
+      "sys_link returns LinkHandle (not SendHandle) with link_completion_handle",
+      "start_linked() returns DurableFuture for select! support",
+      "API: run_linked(req) on workflow client returns Request with linked:bool=true, .send() emits both OneWayCallCommand + CreateLinkCommand",
+      "API: unlink() on workflow client, fire-and-forget, emits RemoveLinkCommand",
+      "API: .send() returns impl InvocationHandle regardless of linked flag — CreateLink completion handled internally"
+    ],
+    "blockers": [],
+    "open_questions": [
+      "Should InvocationHandle::invocation_id() be removed since resolve() exists?",
+      "Should commit history be squashed before PR?",
+      "Should ctx.get_invocation_output() be a general context method for all invocation types?",
+      "Should InvocationHandle trait get a result() method?"
+    ],
+    "risks": [
+      "Server-side linked-workflows has known bugs",
+      "Three repos need coordinated branches"
+    ]
+  },
+  "working_set": {
+    "key_files": [
+      "src/context/request.rs",
+      "src/context/mod.rs",
+      "src/endpoint/context.rs",
+      "src/endpoint/mod.rs",
+      "src/endpoint/futures/trap.rs",
+      "src/endpoint/futures/intercept_error.rs",
+      "macros/src/generator.rs",
+      "macros/src/lib.rs",
+      "src/serde.rs",
+      "src/errors.rs",
+      "src/lib.rs"
+    ],
+    "active_ids": [],
+    "recent_commands": [
+      "cargo test --all-features",
+      "cargo fmt",
+      "cargo check"
+    ]
+  },
+  "context": {
+    "wip_state": "uncommitted",
+    "last_commit": "30b7f79"
+  }
+}
