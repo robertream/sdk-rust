@@ -332,6 +332,20 @@ impl From<std::convert::Infallible> for RequestError {
     }
 }
 
+/// Result of a fire-and-forget (`/send`) ingress invocation.
+///
+/// Unlike [`Request::call`], which waits for the handler's return value,
+/// [`Request::send`] resolves as soon as the Restate runtime has durably
+/// recorded the invocation (HTTP 202).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendResponse {
+    /// Id of the recorded invocation (`inv_...`).
+    pub invocation_id: String,
+    /// Recording status reported by the Restate runtime (e.g. `Accepted`).
+    pub status: String,
+}
+
 pub struct Request<Res = ()> {
     request: Result<executor::HttpRequest, RequestError>,
     _res: PhantomData<Res>,
@@ -442,6 +456,34 @@ impl<Res> Request<Res> {
     {
         decode_response(executor.execute(self.request?).await?)
     }
+
+    /// Fire-and-forget invocation: posts to `{handler}/send` and resolves as
+    /// soon as the Restate runtime has durably recorded the invocation
+    /// (HTTP 202), without waiting for the handler to run.
+    ///
+    /// The handler's return type `Res` is not produced by this endpoint; the
+    /// recorded invocation id is returned instead. Works for service, object,
+    /// and workflow handlers alike, and composes with
+    /// [`Request::idempotency_key`] and [`Request::delay`].
+    pub async fn send<E>(self, executor: &E) -> Result<SendResponse, RequestError>
+    where
+        E: executor::Executor,
+    {
+        let mut request = self.request?;
+        let send_path = format!("{}/send", request.url.path());
+        request.url.set_path(&send_path);
+        let response = executor.execute(request).await?;
+        decode_send_response(response)
+    }
+}
+
+fn decode_send_response(response: executor::HttpResponse) -> Result<SendResponse, RequestError> {
+    if response.status < 200 || response.status > 299 {
+        let status = response.status;
+        let body = String::from_utf8_lossy(response.body.as_ref()).into_owned();
+        return Err(RequestError::Status { status, body });
+    }
+    Ok(serde_json::from_slice(&response.body)?)
 }
 
 fn decode_response<Res>(response: executor::HttpResponse) -> Result<Res, RequestError>
